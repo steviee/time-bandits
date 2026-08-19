@@ -71,7 +71,8 @@ install-docs:
 # fall back to plain `cargo vendor` when it is not installed rather than making
 # every packager install it.
 vendor:
-	@if command -v cargo-vendor-filterer >/dev/null 2>&1; then \
+	@set -e; \
+	if command -v cargo-vendor-filterer >/dev/null 2>&1; then \
 		echo "vendoring with cargo-vendor-filterer"; \
 		cargo vendor-filterer --platform=x86_64-unknown-linux-gnu \
 			--platform=aarch64-unknown-linux-gnu \
@@ -81,14 +82,31 @@ vendor:
 		cargo vendor --locked --versioned-dirs vendor >/dev/null; \
 		tar --zstd -cf vendor.tar.zst vendor; \
 		rm -rf vendor; \
+	fi; \
+	size=$$(stat -c%s vendor.tar.zst); \
+	if [ "$$size" -lt 100000 ]; then \
+		echo "vendor.tar.zst is only $$size bytes — vendoring produced nothing usable" >&2; \
+		exit 1; \
 	fi
 	@ls -lh vendor.tar.zst
 
 # The release tarball. Packaging recipes consume this plus vendor.tar.zst,
 # so a package built from a git checkout and one built from a release are the
 # same thing.
+# Works from a git checkout and from an unpacked release alike. The second
+# case is not hypothetical: actions/checkout falls back to downloading a
+# tarball when the container has no git, leaving no .git directory behind.
 dist: vendor
-	git archive --format=tar.gz --prefix=$(DISTNAME)/ -o $(DISTNAME).tar.gz HEAD
+	@if [ -d .git ] && command -v git >/dev/null 2>&1; then \
+		echo "packing from git"; \
+		git archive --format=tar.gz --prefix=$(DISTNAME)/ -o $(DISTNAME).tar.gz HEAD; \
+	else \
+		echo "no git checkout, packing the working tree"; \
+		tar czf $(DISTNAME).tar.gz --transform 's,^\.,$(DISTNAME),' \
+			--exclude=./target --exclude=./.git --exclude=./vendor \
+			--exclude=./vendor.tar.zst --exclude='./*.tar.gz' \
+			--exclude=./debian --exclude=./node_modules .; \
+	fi
 	@ls -lh $(DISTNAME).tar.gz vendor.tar.zst
 
 clean:

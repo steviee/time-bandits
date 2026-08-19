@@ -27,6 +27,12 @@ override_dh_auto_install:
 	    UNITDIR=/usr/lib/systemd/system \
 	    PAMDIR=/usr/lib/$(DEB_HOST_MULTIARCH)/security
 
+# dh_clean deletes anything with `.orig` in the name, treating it as a leftover
+# of patching. Every vendored crate ships a Cargo.toml.orig that its checksum
+# refers to, so without this exclusion the build fails on the first crate.
+override_dh_clean:
+	dh_clean -X.orig
+
 override_dh_auto_clean:
 	$(MAKE) clean || true
 	rm -rf debian/cargo-home

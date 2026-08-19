@@ -9,3 +9,16 @@ path = ["Cargo.lock", ".gitignore"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Time Bandits contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Debian packaging formats are strict about their own syntax and cannot carry a
+# comment header, so their licensing is declared here instead.
+[[annotations]]
+path = [
+    "packaging/debian/changelog",
+    "packaging/debian/control",
+    "packaging/debian/source/format",
+    "packaging/debian/time-bandits.docs",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Time Bandits contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
