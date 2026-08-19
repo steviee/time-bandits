@@ -89,6 +89,25 @@ which rules out anything before 1.88 — and Debian stable lags far enough behin
 that the upstream `.deb` targets Debian unstable and current Ubuntu rather than
 the current stable release.
 
+## Debug information
+
+None of these packages ship usable debug symbols, and the recipes disable the
+distributions' debug packages (`options=('!debug')`, `%global debug_package
+%nil`) rather than shipping empty ones.
+
+The reason is Cargo, not the packaging: the release profile builds without
+debug information at all, so there is nothing for `rpmbuild` or `makepkg` to
+split out. A distribution that wants real `-debuginfo` / `-dbgsym` packages
+should build with
+
+```sh
+RUSTFLAGS="-Cdebuginfo=2" make build
+```
+
+and drop the corresponding opt-out. That is worth doing for a daemon that
+enforces things — a useful backtrace from a parent's bug report is worth the
+build time — and it is on the list once the packages leave early development.
+
 ## Building the packages
 
 ```sh

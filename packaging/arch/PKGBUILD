@@ -17,6 +17,10 @@ depends=('pam' 'sqlite' 'gcc-libs' 'glibc')
 makedepends=('rust' 'cargo' 'make')
 backup=('etc/timebandits/daemon.toml')
 install="${pkgname}.install"
+# Cargo's release profile carries no debug information, so makepkg's debug
+# package would be an empty shell. See packaging/README.md for how to build
+# one that is actually useful.
+options=('!debug')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

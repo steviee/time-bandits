@@ -42,7 +42,10 @@ jobs:
             cd /tmp/build
             sed -i "s|^source=.*|source=(\"time-bandits-0.1.0.tar.gz\")|" PKGBUILD
             makepkg -f --noconfirm --nocheck
-            bsdtar -tf *.pkg.tar.zst
+            pkg=$(ls time-bandits-0.1.0-1-*.pkg.tar.zst)
+            bsdtar -tf "$pkg"
+            # The module has to land where PAM actually looks on Arch.
+            bsdtar -tf "$pkg" | grep -qx "usr/lib/security/pam_timebandits.so"
           '
 
   rpm:
