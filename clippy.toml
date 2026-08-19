@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Eigennamen, die `doc_markdown` sonst für vergessene Code-Spans hält.
+doc-valid-idents = [
+    "KWin", "KDE", "KScreenLocker", "SDDM", "PipeWire", "PolicyKit",
+    "OpenSSL", "SQLite", "WebAuthn", "WebSocket", "OAuth", "..",
+]

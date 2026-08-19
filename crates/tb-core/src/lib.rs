@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! Domain model shared by every Time Bandits component.
+//!
+//! This crate deliberately contains no I/O: no clock, no filesystem, no D-Bus.
+//! Everything here is a pure function or a plain data type, which is what makes
+//! the enforcement rules testable without a running desktop session.
+
 pub mod appid;
 pub mod duration;
 pub mod engine;

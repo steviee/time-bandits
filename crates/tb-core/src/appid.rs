@@ -1,49 +1,49 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Stabile Anwendungs-Kennungen aus uneinheitlichen Quellen.
+//! Stable application identifiers from inconsistent sources.
 //!
-//! Dieselbe Anwendung erscheint je nach Quelle anders:
+//! The same application looks different depending on where it is observed:
 //!
-//! | Quelle | Firefox als Flatpak |
+//! | source | Firefox installed as a Flatpak |
 //! |---|---|
-//! | KWin `desktopFileName` | `org.mozilla.firefox` |
-//! | KWin `resourceClass`   | `firefox` |
-//! | systemd-Scope          | `app-flatpak-org.mozilla.firefox-2891.scope` |
+//! | `KWin` `desktopFileName` | `org.mozilla.firefox` |
+//! | `KWin` `resourceClass`   | `firefox` |
+//! | systemd scope            | `app-flatpak-org.mozilla.firefox-2891.scope` |
 //!
-//! Ohne Vereinheitlichung stünde dieselbe App dreimal im Bericht. Diese Datei
-//! normalisiert alle drei auf `org.mozilla.firefox`.
+//! Without normalization one application would appear three times in a report.
+//! This module maps all three onto `org.mozilla.firefox`.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// Woher eine Kennung stammt. Bestimmt, welcher Beobachtung bei Widerspruch
-/// geglaubt wird — und macht in Berichten sichtbar, wie verlässlich ein Eintrag ist.
+/// Where an identifier came from. Decides which observation wins when two
+/// disagree, and makes the confidence of a report entry visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AppIdSource {
-    /// Kein Fokus zuzuordnen (Agent tot, Skript deaktiviert). Schwächste Quelle.
+    /// No focus could be attributed (agent dead, script disabled). Weakest.
     Unknown,
-    /// Aus dem systemd-Scope des Prozesses. Verfügbar auch ohne Sitzungs-Agent.
+    /// From the process's systemd scope. Available without a session agent.
     SystemdScope,
-    /// Aus `resourceClass` des Fensters. Grob, aber immer vorhanden.
+    /// From the window's `resourceClass`. Coarse, but always present.
     WindowClass,
-    /// Aus `desktopFileName` des Fensters. Genaueste Quelle.
+    /// From the window's `desktopFileName`. The most precise source.
     DesktopFile,
 }
 
-/// Eine normalisierte Anwendungs-Kennung.
+/// A normalized application identifier.
 ///
-/// Immer kleingeschrieben und ohne `.desktop`-Endung, damit Vergleiche und
-/// Datenbank-Schlüssel eindeutig sind.
+/// Always lowercase and without the `.desktop` suffix so comparisons and
+/// database keys are unambiguous.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AppId(String);
 
 impl AppId {
-    /// Platzhalter für nicht zuordenbare Zeit. Taucht in Berichten als eigener
-    /// Posten auf — verschwiegene Zeit wäre schlimmer als sichtbar unbekannte.
+    /// Placeholder for time that could not be attributed. It shows up as its own
+    /// line in reports — visibly unknown time is better than quietly dropped time.
     pub const UNKNOWN: &'static str = "unknown";
 
     #[must_use]
@@ -51,7 +51,7 @@ impl AppId {
         Self(Self::UNKNOWN.to_owned())
     }
 
-    /// Normalisiert beliebigen Rohtext zu einer Kennung.
+    /// Normalizes arbitrary raw text into an identifier.
     #[must_use]
     pub fn new(raw: &str) -> Self {
         let s = raw.trim().trim_end_matches(".desktop").to_ascii_lowercase();
@@ -83,7 +83,7 @@ impl fmt::Display for AppId {
     }
 }
 
-/// Eine Beobachtung: welche App, aus welcher Quelle.
+/// One observation: which application, from which source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppObservation {
     pub app: AppId,
@@ -99,7 +99,7 @@ impl AppObservation {
         }
     }
 
-    /// Behält die verlässlichere von zwei Beobachtungen.
+    /// Keeps the more trustworthy of two observations.
     #[must_use]
     pub fn best_of(self, other: Self) -> Self {
         if other.source > self.source {
@@ -110,7 +110,7 @@ impl AppObservation {
     }
 }
 
-/// Macht systemd-Unit-Escaping rückgängig (`\x2d` → `-`).
+/// Reverses systemd unit-name escaping (`\x2d` → `-`).
 fn unescape_unit(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let bytes = name.as_bytes();
@@ -130,20 +130,20 @@ fn unescape_unit(name: &str) -> String {
     out
 }
 
-/// Bekannte Starter-Präfixe, die systemd zwischen `app-` und die eigentliche
-/// Kennung schiebt. Die Groß-/Kleinschreibung ist je nach Plasma-Version anders.
+/// Launcher prefixes systemd inserts between `app-` and the identifier proper.
+/// The casing varies between Plasma versions.
 const LAUNCHER_PREFIXES: &[&str] = &["flatpak-", "snap-", "gnome-", "kde-", "wayland-", "glib-"];
 
-/// Zieht die Anwendungs-Kennung aus einem systemd-Unit-Namen.
+/// Extracts the application identifier from a systemd unit name.
 ///
-/// Erkennt unter anderem:
+/// Recognizes, among others:
 /// * `app-org.kde.konsole-9d0a.scope`
 /// * `app-flatpak-org.mozilla.firefox-2891.scope`
 /// * `app-KDE-org.kde.dolphin-1234.scope`
 /// * `app-org.kde.dolphin@a1b2c3.service`
 ///
-/// Gibt `None` zurück, wenn die Unit gar keine Anwendung beschreibt (etwa
-/// `user@1000.service` oder `session-2.scope`) — dann ist Schweigen richtig.
+/// Returns `None` when the unit does not describe an application at all (such as
+/// `user@1000.service` or `session-2.scope`) — staying silent is correct there.
 #[must_use]
 pub fn app_id_from_unit(unit: &str) -> Option<AppId> {
     let unit = unescape_unit(unit.trim());
@@ -152,7 +152,7 @@ pub fn app_id_from_unit(unit: &str) -> Option<AppId> {
         .or_else(|| unit.strip_suffix(".service"))?;
     let mut rest = unit.strip_prefix("app-")?;
 
-    // Starter-Präfix entfernen, unabhängig von Groß-/Kleinschreibung.
+    // Strip the launcher prefix, case-insensitively.
     let lower = rest.to_ascii_lowercase();
     for p in LAUNCHER_PREFIXES {
         if lower.starts_with(p) {
@@ -161,8 +161,8 @@ pub fn app_id_from_unit(unit: &str) -> Option<AppId> {
         }
     }
 
-    // Instanz-Kennung abschneiden: `@<token>` oder ein abschließendes
-    // `-<hex/zahl>`. Ein Bindestrich mitten im Namen (`org.kde.k-menu`) bleibt.
+    // Cut the instance token: `@<token>` or a trailing `-<hex>`. A hyphen in the
+    // middle of a real name (`org.kde.k-menu`) survives.
     let rest = rest.split('@').next().unwrap_or(rest);
     let rest = match rest.rsplit_once('-') {
         Some((head, tail))
@@ -179,7 +179,7 @@ pub fn app_id_from_unit(unit: &str) -> Option<AppId> {
     if id.is_unknown() { None } else { Some(id) }
 }
 
-/// Baut die beste Beobachtung aus dem, was KWin über ein Fenster liefert.
+/// Builds the best observation from what `KWin` reports about a window.
 #[must_use]
 pub fn observe_window(desktop_file: Option<&str>, resource_class: Option<&str>) -> AppObservation {
     if let Some(df) = desktop_file.map(str::trim).filter(|s| !s.is_empty()) {
@@ -208,7 +208,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalisiert_desktop_dateinamen() {
+    fn normalizes_desktop_file_names() {
         assert_eq!(
             AppId::new("org.kde.Konsole.desktop").as_str(),
             "org.kde.konsole"
@@ -218,15 +218,15 @@ mod tests {
     }
 
     #[test]
-    fn leerer_name_wird_unknown() {
+    fn an_empty_name_becomes_unknown() {
         assert!(AppId::new("").is_unknown());
         assert!(AppId::new("   ").is_unknown());
-        // Reine Sonderzeichen ergeben keine brauchbare Kennung.
+        // Punctuation alone yields no usable identifier.
         assert!(AppId::new("///").is_unknown());
     }
 
     #[test]
-    fn liest_kde_scope() {
+    fn reads_a_kde_scope() {
         assert_eq!(
             app_id_from_unit("app-org.kde.konsole-9d0a.scope")
                 .unwrap()
@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn liest_flatpak_scope() {
+    fn reads_a_flatpak_scope() {
         assert_eq!(
             app_id_from_unit("app-flatpak-org.mozilla.firefox-2891.scope")
                 .unwrap()
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn liest_scope_mit_starter_praefix_und_instanz() {
+    fn reads_a_scope_with_launcher_prefix_and_instance() {
         assert_eq!(
             app_id_from_unit("app-KDE-org.kde.dolphin-1234.scope")
                 .unwrap()
@@ -262,8 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn macht_systemd_escaping_rueckgaengig() {
-        // systemd kodiert `-` im Anwendungsnamen als `\x2d`.
+    fn reverses_systemd_escaping() {
+        // systemd encodes a `-` inside the application name as `\x2d`.
         assert_eq!(
             app_id_from_unit(r"app-my\x2dgame-4f2a.scope")
                 .unwrap()
@@ -273,8 +273,8 @@ mod tests {
     }
 
     #[test]
-    fn bindestrich_im_namen_bleibt_erhalten() {
-        // `menu` ist kein Hex-Suffix, darf also nicht abgeschnitten werden.
+    fn a_hyphen_inside_the_name_survives() {
+        // `menu` is not a hex suffix and must not be cut off.
         assert_eq!(
             app_id_from_unit("app-org.kde.k-menu.scope")
                 .unwrap()
@@ -284,40 +284,40 @@ mod tests {
     }
 
     #[test]
-    fn ignoriert_units_die_keine_apps_sind() {
+    fn ignores_units_that_are_not_applications() {
         assert!(app_id_from_unit("user@1000.service").is_none());
         assert!(app_id_from_unit("session-2.scope").is_none());
         assert!(app_id_from_unit("plasma-plasmashell.service").is_none());
         assert!(app_id_from_unit("app-.scope").is_none());
-        assert!(app_id_from_unit("nicht-mal-eine-unit").is_none());
+        assert!(app_id_from_unit("not-even-a-unit").is_none());
     }
 
     #[test]
-    fn fensterbeobachtung_bevorzugt_desktop_datei() {
+    fn window_observation_prefers_the_desktop_file() {
         let o = observe_window(Some("org.mozilla.firefox"), Some("firefox"));
         assert_eq!(o.source, AppIdSource::DesktopFile);
         assert_eq!(o.app.as_str(), "org.mozilla.firefox");
     }
 
     #[test]
-    fn fensterbeobachtung_faellt_auf_fensterklasse_zurueck() {
+    fn window_observation_falls_back_to_the_window_class() {
         let o = observe_window(None, Some("Firefox"));
         assert_eq!(o.source, AppIdSource::WindowClass);
         assert_eq!(o.app.as_str(), "firefox");
-        // Leerer desktopFileName kommt bei manchen Anwendungen tatsächlich vor.
+        // An empty desktopFileName really does occur for some applications.
         let o = observe_window(Some(""), Some("steam"));
         assert_eq!(o.source, AppIdSource::WindowClass);
     }
 
     #[test]
-    fn ohne_jede_angabe_bleibt_unknown() {
+    fn with_nothing_reported_it_stays_unknown() {
         let o = observe_window(None, None);
         assert_eq!(o.source, AppIdSource::Unknown);
         assert!(o.app.is_unknown());
     }
 
     #[test]
-    fn verlaesslichere_quelle_gewinnt() {
+    fn the_more_trustworthy_source_wins() {
         let scope = AppObservation {
             app: AppId::new("firefox"),
             source: AppIdSource::SystemdScope,
@@ -328,7 +328,7 @@ mod tests {
         };
         assert_eq!(scope.clone().best_of(desktop.clone()), desktop);
         assert_eq!(desktop.clone().best_of(scope), desktop);
-        // Unknown verdrängt nie eine echte Beobachtung.
+        // Unknown never displaces a real observation.
         assert_eq!(desktop.clone().best_of(AppObservation::unknown()), desktop);
     }
 }

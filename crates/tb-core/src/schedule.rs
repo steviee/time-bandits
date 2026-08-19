@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Wochentage, Zeitfenster und die Definition des „Policy-Tages“.
+//! Weekdays, time windows, and the definition of a "policy day".
 //!
-//! Ein Policy-Tag ist bewusst *nicht* der Kalendertag: er beginnt zu einer
-//! konfigurierbaren Uhrzeit (Vorgabe 04:00). Sonst würde ein Kind, das um 23:50
-//! noch spielt, um 00:00 ein frisches Tageskontingent bekommen.
+//! A policy day is deliberately *not* a calendar day: it starts at a
+//! configurable wall-clock time (04:00 by default). Otherwise a child still
+//! playing at 23:50 would be handed a fresh daily quota ten minutes later.
 
 use std::fmt;
 
@@ -14,10 +14,10 @@ use jiff::tz::TimeZone;
 use jiff::{Zoned, ZonedRound};
 use serde::{Deserialize, Serialize};
 
-/// Wochentag mit stabiler, sprachunabhängiger Serialisierung.
+/// A weekday with a stable, language-independent serialization.
 ///
-/// `jiff::civil::Weekday` bekommt bewusst keinen eigenen serde-Support
-/// aufgesetzt — dieser Typ ist die Schnittstelle zu Konfiguration und API.
+/// `jiff::civil::Weekday` deliberately does not get serde support bolted on;
+/// this type is the boundary towards configuration files and the API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Day {
@@ -76,7 +76,7 @@ impl fmt::Display for Day {
     }
 }
 
-/// Ein Wert pro Wochentag, mit Vorgabewert und optionalen Ausnahmen.
+/// One value per weekday, with a default and optional per-day overrides.
 ///
 /// In TOML/JSON:
 /// ```toml
@@ -100,7 +100,7 @@ impl<T> WeekSchedule<T> {
         }
     }
 
-    /// Wert für einen Wochentag: Ausnahme, sonst Vorgabe.
+    /// The value for a weekday: its override, otherwise the default.
     pub fn get(&self, day: Day) -> &T {
         self.overrides.get(day).unwrap_or(&self.default)
     }
@@ -110,8 +110,8 @@ impl<T> WeekSchedule<T> {
     }
 }
 
-/// Ausnahmen je Wochentag. Eigener Typ, damit `#[serde(flatten)]` die Tage als
-/// Felder auf gleicher Ebene wie `default` schreibt statt verschachtelt.
+/// Per-weekday overrides. A dedicated struct so `#[serde(flatten)]` writes the
+/// days as siblings of `default` instead of nesting them.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DayOverrides<T> {
     #[serde(skip_serializing_if = "Option::is_none", default = "Option::default")]
@@ -176,11 +176,11 @@ impl<T> DayOverrides<T> {
     }
 }
 
-/// Ein erlaubtes Zeitfenster innerhalb eines Policy-Tages, z. B. 15:00–19:00.
+/// An allowed window inside a policy day, e.g. 15:00–19:00.
 ///
-/// `end` darf kleiner als `start` sein; das Fenster läuft dann über Mitternacht
-/// hinweg weiter (z. B. 22:00–01:00) und gehört trotzdem zum selben Policy-Tag,
-/// solange es vor dessen Ende liegt.
+/// `end` may be earlier than `start`; the window then continues past midnight
+/// (e.g. 22:00–01:00) and still belongs to the same policy day as long as it
+/// ends before that day does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeWindow {
     pub start: civil::Time,
@@ -193,7 +193,7 @@ impl TimeWindow {
         Self { start, end }
     }
 
-    /// Ganztägig — nützlich als Vorgabe „kein Bettzeit-Limit“.
+    /// Covers the whole day — handy as "no bedtime restriction".
     #[must_use]
     pub fn all_day() -> Self {
         Self::new(civil::Time::midnight(), civil::Time::MAX)
@@ -204,7 +204,7 @@ impl TimeWindow {
         self.end < self.start
     }
 
-    /// Enthält das Fenster diese Wanduhrzeit? Halboffen: `[start, end)`.
+    /// Does the window contain this wall-clock time? Half-open: `[start, end)`.
     #[must_use]
     pub fn contains(&self, t: civil::Time) -> bool {
         if self.wraps_midnight() {
@@ -228,15 +228,15 @@ impl fmt::Display for TimeWindow {
     }
 }
 
-/// Der Policy-Tag, zu dem ein Zeitpunkt gehört, plus der Wochentag dafür.
+/// The policy day a moment belongs to, plus the weekday to look rules up under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyDay {
     pub date: civil::Date,
     pub day: Day,
 }
 
-/// Bestimmt den Policy-Tag: liegt die Uhrzeit vor `day_start`, zählt der Zeitpunkt
-/// noch zum Vortag.
+/// Determines the policy day: before `day_start`, a moment still counts towards
+/// the previous day.
 #[must_use]
 pub fn policy_day(now: &Zoned, day_start: civil::Time) -> PolicyDay {
     let date = if now.time() < day_start {
@@ -250,26 +250,27 @@ pub fn policy_day(now: &Zoned, day_start: civil::Time) -> PolicyDay {
     }
 }
 
-/// Wann endet der aktuelle Policy-Tag als echter Zeitpunkt?
+/// When does the current policy day end, as a real instant?
 ///
-/// Geht über `jiff` und respektiert damit Sommerzeitwechsel: fällt `day_start`
-/// in eine übersprungene Stunde, rückt der Zeitpunkt nach vorn statt zu scheitern.
+/// Goes through `jiff` and therefore respects daylight-saving transitions: if
+/// `day_start` falls into a skipped hour, the instant moves forward instead of
+/// failing.
 #[must_use]
 pub fn policy_day_end(day: PolicyDay, day_start: civil::Time, tz: &TimeZone) -> Zoned {
     let next = day.date.tomorrow().unwrap_or(day.date);
     next.to_datetime(day_start)
         .to_zoned(tz.clone())
         .unwrap_or_else(|_| {
-            // Nur erreichbar, wenn die Zeitzone diesen Zeitpunkt gar nicht kennt;
-            // dann lieber auf Mitternacht zurückfallen als die Auswertung abbrechen.
+            // Only reachable if the zone has no such instant at all; falling back
+            // to midnight beats aborting the evaluation.
             next.to_datetime(civil::Time::midnight())
                 .to_zoned(tz.clone())
-                .expect("Mitternacht existiert in jeder Zeitzone")
+                .expect("midnight exists in every time zone")
         })
 }
 
-/// Rundet auf volle Sekunden ab — Ticks arbeiten sekundengenau, und
-/// Nanosekunden in Vergleichen führen zu Flackern an Fenstergrenzen.
+/// Truncates to whole seconds — ticks are second-granular, and stray
+/// nanoseconds make comparisons flicker at window boundaries.
 #[must_use]
 pub fn truncate_to_second(z: &Zoned) -> Zoned {
     z.round(ZonedRound::new().smallest(jiff::Unit::Second))
@@ -281,29 +282,29 @@ mod tests {
     use super::*;
 
     fn tz() -> TimeZone {
-        TimeZone::get("Europe/Berlin").expect("tzdb kennt Europe/Berlin")
+        TimeZone::get("Europe/Berlin").expect("tzdb knows Europe/Berlin")
     }
 
     fn at(y: i16, m: i8, d: i8, hh: i8, mm: i8) -> Zoned {
         civil::date(y, m, d)
             .at(hh, mm, 0, 0)
             .to_zoned(tz())
-            .expect("gültiger Zeitpunkt")
+            .expect("valid instant")
     }
 
     #[test]
-    fn zeitfenster_ohne_mitternacht() {
+    fn window_without_midnight() {
         let w = TimeWindow::new(civil::time(15, 0, 0, 0), civil::time(19, 0, 0, 0));
         assert!(!w.wraps_midnight());
         assert!(!w.contains(civil::time(14, 59, 0, 0)));
         assert!(w.contains(civil::time(15, 0, 0, 0)));
         assert!(w.contains(civil::time(18, 59, 0, 0)));
-        // Halboffen: das Ende gehört nicht mehr dazu.
+        // Half-open: the end is no longer inside.
         assert!(!w.contains(civil::time(19, 0, 0, 0)));
     }
 
     #[test]
-    fn zeitfenster_ueber_mitternacht() {
+    fn window_across_midnight() {
         let w = TimeWindow::new(civil::time(22, 0, 0, 0), civil::time(1, 0, 0, 0));
         assert!(w.wraps_midnight());
         assert!(w.contains(civil::time(23, 30, 0, 0)));
@@ -313,38 +314,38 @@ mod tests {
     }
 
     #[test]
-    fn policy_tag_beginnt_um_vier_uhr() {
+    fn policy_day_starts_at_four() {
         let day_start = civil::time(4, 0, 0, 0);
-        // 23:50 am Dienstag gehört zum Policy-Tag Dienstag.
+        // 23:50 on Tuesday belongs to policy day Tuesday.
         let pd = policy_day(&at(2026, 8, 18, 23, 50), day_start);
         assert_eq!(pd.date, civil::date(2026, 8, 18));
         assert_eq!(pd.day, Day::Tuesday);
-        // 00:30 in der Nacht darauf gehört immer noch zu Dienstag.
+        // 00:30 that night still belongs to Tuesday.
         let pd = policy_day(&at(2026, 8, 19, 0, 30), day_start);
         assert_eq!(pd.date, civil::date(2026, 8, 18));
         assert_eq!(pd.day, Day::Tuesday);
-        // 04:00 startet den neuen Policy-Tag.
+        // 04:00 opens the new policy day.
         let pd = policy_day(&at(2026, 8, 19, 4, 0), day_start);
         assert_eq!(pd.date, civil::date(2026, 8, 19));
         assert_eq!(pd.day, Day::Wednesday);
     }
 
     #[test]
-    fn policy_tag_ende_ueberlebt_sommerzeitwechsel() {
+    fn policy_day_end_survives_dst_transition() {
         let day_start = civil::time(4, 0, 0, 0);
-        // In Europa wird in der Nacht auf den 29.03.2026 die Stunde 02:00–03:00
-        // übersprungen. 04:00 existiert weiterhin, der Tag ist aber nur 23 h lang.
+        // In Europe the hour 02:00–03:00 is skipped on the night of 2026-03-29.
+        // 04:00 still exists, but the day is only 23 hours long.
         let pd = policy_day(&at(2026, 3, 28, 10, 0), day_start);
         let end = policy_day_end(pd, day_start, &tz());
         assert_eq!(end.date(), civil::date(2026, 3, 29));
         assert_eq!(end.hour(), 4);
         let start = at(2026, 3, 28, 4, 0);
         let hours = start.duration_until(&end).as_secs() / 3600;
-        assert_eq!(hours, 23, "Tag des Sommerzeitwechsels hat 23 Stunden");
+        assert_eq!(hours, 23, "the spring-forward day has 23 hours");
     }
 
     #[test]
-    fn wochenplan_faellt_auf_default_zurueck() {
+    fn week_schedule_falls_back_to_default() {
         let mut s = WeekSchedule::uniform(crate::DurationSpec::from_hours(2));
         assert_eq!(*s.get(Day::Monday), crate::DurationSpec::from_hours(2));
         s.set(Day::Saturday, crate::DurationSpec::from_hours(3));
@@ -353,7 +354,7 @@ mod tests {
     }
 
     #[test]
-    fn wochenplan_serialisiert_flach() {
+    fn week_schedule_serializes_flat() {
         let mut s = WeekSchedule::uniform(crate::DurationSpec::from_hours(2));
         s.set(Day::Saturday, crate::DurationSpec::from_hours(3));
         let json = serde_json::to_string(&s).unwrap();

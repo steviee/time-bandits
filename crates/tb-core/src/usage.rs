@@ -1,20 +1,19 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Aus einzelnen Beobachtungen werden Nutzungs-Segmente.
+//! Turns individual observations into usage segments.
 //!
-//! Der Daemon beobachtet im Sekundentakt, speichert aber nicht im Sekundentakt.
-//! Aufeinanderfolgende Ticks derselben Anwendung werden zu einem Segment
-//! zusammengefasst — das ist die Einheit, die in der Datenbank landet und zum
-//! Hub synchronisiert wird.
+//! The daemon observes once per tick but does not store once per tick.
+//! Consecutive ticks of the same application collapse into one segment — the
+//! unit that lands in the database and syncs to the hub.
 //!
-//! Zwei Fälle machen den Unterschied zwischen richtiger und plausibel falscher
-//! Zeiterfassung aus, und beide werden hier behandelt:
+//! Two cases separate correct accounting from plausible-looking nonsense, and
+//! both are handled here:
 //!
-//! * **Lücken**: Nach Suspend, Kernel-Panik oder einem angehaltenen Daemon
-//!   liegen zwischen zwei Ticks Stunden. Diese Zeit war keine Nutzung.
-//! * **Uhr-Sprünge**: Läuft die Wanduhr rückwärts (NTP-Korrektur), darf daraus
-//!   kein negatives oder überlanges Segment entstehen.
+//! * **Gaps**: after suspend, a kernel panic or a stopped daemon, hours pass
+//!   between two ticks. That time was not usage.
+//! * **Clock jumps**: if the wall clock runs backwards (an NTP correction), it
+//!   must not produce a negative or absurdly long segment.
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -23,11 +22,11 @@ use uuid::Uuid;
 use crate::appid::{AppId, AppIdSource, AppObservation};
 use crate::duration::DurationSpec;
 
-/// Ein abgeschlossener Nutzungsabschnitt.
+/// One finished stretch of usage.
 ///
-/// Die `id` wird beim Erzeugen vergeben und nie geändert. Sie macht die
-/// Synchronisation zum Hub idempotent: mehrfach übertragene Segmente
-/// überschreiben sich selbst, statt sich zu addieren.
+/// The `id` is assigned on creation and never changes. It makes syncing to the
+/// hub idempotent: a segment delivered twice overwrites itself instead of being
+/// counted twice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageSegment {
     pub id: Uuid,
@@ -36,7 +35,7 @@ pub struct UsageSegment {
     pub source: AppIdSource,
     pub start: Timestamp,
     pub end: Timestamp,
-    /// Fenstertitel, nur wenn die Policy es ausdrücklich erlaubt.
+    /// Window title, only when the policy explicitly allows recording it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
@@ -54,21 +53,20 @@ impl UsageSegment {
     }
 }
 
-/// Was der Daemon in einem Tick sieht.
+/// What the daemon sees in one tick.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tick {
-    /// Benutzer ist aktiv an dieser Anwendung.
+    /// The user is actively working in this application.
     Active {
         at: Timestamp,
         app: AppObservation,
         title: Option<String>,
     },
-    /// Keine anrechenbare Nutzung: untätig, gesperrt, abgemeldet.
+    /// Nothing creditable: idle, locked, or logged out.
     ///
-    /// `at` ist der Zeitpunkt, ab dem *nicht mehr* angerechnet wird — bei
-    /// Untätigkeit also der Beginn der Untätigkeit, nicht der Moment ihrer
-    /// Feststellung. Der Aufrufer rechnet `jetzt - idle_seconds` und begrenzt
-    /// das Ergebnis nach unten auf den letzten Tick.
+    /// `at` is the moment crediting *stops* — for inactivity that is when the
+    /// inactivity began, not when it was noticed. The caller computes
+    /// `now - idle_seconds` and clamps the result to the last tick.
     Idle { at: Timestamp },
 }
 
@@ -81,15 +79,15 @@ impl Tick {
     }
 }
 
-/// Einstellungen für die Segmentbildung.
+/// Knobs for segment building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentConfig {
-    /// Erwarteter Abstand zwischen zwei Ticks.
+    /// Expected spacing between two ticks.
     pub tick_interval: DurationSpec,
-    /// Ab dieser Lücke gilt die Zwischenzeit als nicht genutzt (Suspend, Absturz).
+    /// Beyond this gap the intervening time counts as unused (suspend, crash).
     pub max_gap: DurationSpec,
-    /// Segmente werden spätestens nach dieser Dauer geschnitten, damit auch bei
-    /// einem Absturz höchstens dieser Zeitraum ungespeichert verloren geht.
+    /// Segments are cut at this length, bounding how much is lost if the daemon
+    /// dies before writing.
     pub max_segment: DurationSpec,
 }
 
@@ -103,25 +101,25 @@ impl Default for SegmentConfig {
     }
 }
 
-/// Warum ein Segment geschlossen wurde. Rein informativ, aber in Tests und
-/// Fehlersuche sehr nützlich.
+/// Why a segment was closed. Informational, but invaluable in tests and when
+/// diagnosing odd reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
-    /// Andere Anwendung im Fokus.
+    /// A different application took focus.
     AppChanged,
-    /// Untätig, gesperrt oder abgemeldet.
+    /// Idle, locked or logged out.
     BecameIdle,
-    /// Lücke im Tick-Strom (Suspend, angehaltener Daemon).
+    /// A hole in the tick stream (suspend, stopped daemon).
     Gap,
-    /// Uhr ist rückwärts gesprungen.
+    /// The clock jumped backwards.
     ClockWentBackwards,
-    /// Höchstlänge erreicht, wird nahtlos fortgesetzt.
+    /// Maximum length reached; continues seamlessly.
     MaxLength,
-    /// Ausdrücklich abgeschlossen (Herunterfahren, Tagesgrenze).
+    /// Closed explicitly (shutdown, day boundary).
     Flushed,
 }
 
-/// Ein geschlossenes Segment samt Grund.
+/// A closed segment together with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedSegment {
     pub segment: UsageSegment,
@@ -135,12 +133,11 @@ struct OpenSegment {
     source: AppIdSource,
     title: Option<String>,
     start: Timestamp,
-    /// Letzter Tick, der zu diesem Segment gehört. Das Segment endet hier — nicht
-    /// beim aktuellen Tick, sonst würde die Lücke davor mitgezählt.
+    /// The last tick belonging to this segment.
     last_seen: Timestamp,
 }
 
-/// Formt aus einem Tick-Strom Segmente.
+/// Shapes a tick stream into segments.
 #[derive(Debug)]
 pub struct SegmentBuilder {
     subject: String,
@@ -158,18 +155,18 @@ impl SegmentBuilder {
         }
     }
 
-    /// Läuft gerade ein Segment?
+    /// Is a segment currently open?
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
 
-    /// Verarbeitet einen Tick und liefert das dabei geschlossene Segment, falls eines endet.
+    /// Processes one tick and returns the segment it closed, if any.
     pub fn observe(&mut self, tick: &Tick) -> Option<ClosedSegment> {
         let now = tick.at();
 
-        // Uhr rückwärts: alles Offene abschließen und neu beginnen. Ein Segment
-        // mit Ende vor dem Start wäre in der Datenbank dauerhaft kaputt.
+        // Clock ran backwards: close what is open and start over. A segment
+        // ending before it starts would be permanently broken in the database.
         if let Some(open) = &self.open
             && now < open.last_seen
         {
@@ -178,8 +175,8 @@ impl SegmentBuilder {
             return closed;
         }
 
-        // Lücke: Die Zeit dazwischen war keine Nutzung, das Segment endet beim
-        // letzten gesehenen Tick.
+        // Gap: the time in between was not usage, so the segment ends at the
+        // last tick actually observed.
         if let Some(open) = &self.open {
             let gap = open.last_seen.duration_until(now).as_secs();
             if u64::try_from(gap).unwrap_or(0) > self.config.max_gap.as_secs() {
@@ -203,7 +200,7 @@ impl SegmentBuilder {
                     return closed;
                 }
 
-                // Höchstlänge: schneiden und nahtlos fortsetzen.
+                // Maximum length: cut here and continue seamlessly.
                 let len = open.start.duration_until(now).as_secs();
                 if u64::try_from(len).unwrap_or(0) >= self.config.max_segment.as_secs() {
                     let closed = self.close(CloseReason::MaxLength, Some(now));
@@ -211,9 +208,9 @@ impl SegmentBuilder {
                     return closed;
                 }
 
-                // Dieselbe App weiter im Fokus: Segment verlängern. Eine genauere
-                // Quelle (z. B. desktopFileName nach anfänglichem Scope-Treffer)
-                // darf die Herkunft nachträglich aufwerten.
+                // Same application still focused: extend the segment. A more
+                // precise source (desktopFileName arriving after an initial
+                // scope match) may upgrade the recorded provenance.
                 if app.source > open.source {
                     open.source = app.source;
                 }
@@ -226,11 +223,11 @@ impl SegmentBuilder {
         }
     }
 
-    /// Schließt ein laufendes Segment ausdrücklich ab — beim Herunterfahren, an
-    /// der Tagesgrenze oder vor dem Speichern.
+    /// Closes an open segment explicitly — on shutdown, at the day boundary, or
+    /// before persisting.
     pub fn flush(&mut self, at: Timestamp) -> Option<ClosedSegment> {
-        // Liegt der Abschluss weit hinter dem letzten Tick, war die Zwischenzeit
-        // keine Nutzung — dann endet das Segment beim letzten Tick.
+        // If the flush happens long after the last tick, that time was not
+        // usage, and the segment ends at the last tick instead.
         let within_gap = self.open.as_ref().is_some_and(|open| {
             let gap = open.last_seen.duration_until(at).as_secs();
             u64::try_from(gap).unwrap_or(0) <= self.config.max_gap.as_secs()
@@ -251,24 +248,24 @@ impl SegmentBuilder {
         }
     }
 
-    /// Schließt das offene Segment.
+    /// Closes the open segment.
     ///
-    /// `end_at` ist der Zeitpunkt des auslösenden Ereignisses — beim
-    /// Anwendungswechsel also der Tick, an dem die *neue* App im Fokus war. Die
-    /// Zeit zwischen dem letzten eigenen Tick und dem Wechsel gehört der alten
-    /// App: sonst versickert bei jedem Wechsel ein Tick-Intervall und die Summe
-    /// aller Segmente unterschreitet die tatsächlich verbrachte Zeit.
+    /// `end_at` is the instant of the triggering event — for an application
+    /// switch, the tick at which the *new* application held focus. The time
+    /// between the last own tick and the switch belongs to the old application:
+    /// otherwise one tick interval evaporates on every switch and the sum of all
+    /// segments falls short of the time actually spent.
     ///
-    /// Bei Lücken und Uhr-Sprüngen wird `None` übergeben — dort ist das
-    /// Gegenteil richtig, die Zwischenzeit war nachweislich keine Nutzung.
+    /// For gaps and clock jumps `None` is passed — there the opposite is true,
+    /// the intervening time demonstrably was not usage.
     fn close(&mut self, reason: CloseReason, end_at: Option<Timestamp>) -> Option<ClosedSegment> {
         let open = self.open.take()?;
         let mut end = match end_at {
             Some(t) if t > open.last_seen => t,
             _ => open.last_seen,
         };
-        // Ein Segment aus einem einzigen Tick, das sofort abgeschlossen wird,
-        // hätte sonst die Dauer null und ginge verloren.
+        // A single-tick segment closed immediately would have zero duration and
+        // be dropped.
         if end <= open.start {
             end = open
                 .start
@@ -294,7 +291,7 @@ impl SegmentBuilder {
     }
 }
 
-/// Summiert Segmente je Anwendung, absteigend nach Dauer.
+/// Sums segments per application, longest first.
 #[must_use]
 pub fn totals_by_app(segments: &[UsageSegment]) -> Vec<(AppId, DurationSpec)> {
     use std::collections::HashMap;
@@ -306,13 +303,13 @@ pub fn totals_by_app(segments: &[UsageSegment]) -> Vec<(AppId, DurationSpec)> {
         .into_iter()
         .map(|(a, secs)| (a.clone(), DurationSpec::from_secs(secs)))
         .collect();
-    // Nach Dauer absteigend, bei Gleichstand nach Name — sonst wackelt die
-    // Reihenfolge in Berichten zwischen zwei Abrufen.
+    // Longest first, ties broken by name — otherwise report ordering wobbles
+    // between two refreshes.
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
 }
 
-/// Gesamtdauer aller Segmente.
+/// Total duration across all segments.
 #[must_use]
 pub fn total(segments: &[UsageSegment]) -> DurationSpec {
     DurationSpec::from_secs(segments.iter().map(|s| s.duration().as_secs()).sum())
@@ -323,7 +320,7 @@ mod tests {
     use super::*;
 
     fn ts(secs: i64) -> Timestamp {
-        Timestamp::from_second(1_756_000_000 + secs).expect("gültiger Zeitstempel")
+        Timestamp::from_second(1_756_000_000 + secs).expect("valid timestamp")
     }
 
     fn active(secs: i64, app: &str) -> Tick {
@@ -342,67 +339,67 @@ mod tests {
     }
 
     #[test]
-    fn gleiche_app_wird_zu_einem_segment() {
+    fn one_application_collapses_into_one_segment() {
         let mut b = builder();
         for t in [0, 5, 10, 15] {
             assert!(b.observe(&active(t, "firefox")).is_none());
         }
-        let closed = b.flush(ts(20)).expect("Segment");
+        let closed = b.flush(ts(20)).expect("a segment");
         assert_eq!(closed.segment.duration(), DurationSpec::from_secs(20));
         assert_eq!(closed.segment.app.as_str(), "firefox");
     }
 
     #[test]
-    fn anwendungswechsel_schliesst_das_segment() {
+    fn switching_application_closes_the_segment() {
         let mut b = builder();
         b.observe(&active(0, "firefox"));
         b.observe(&active(5, "firefox"));
-        let closed = b.observe(&active(10, "konsole")).expect("Segment");
+        let closed = b.observe(&active(10, "konsole")).expect("a segment");
         assert_eq!(closed.reason, CloseReason::AppChanged);
         assert_eq!(closed.segment.app.as_str(), "firefox");
-        // Die Zeit bis zum Wechsel gehört Firefox — sonst fehlen in der Summe
-        // pro Anwendungswechsel fünf Sekunden.
+        // The time up to the switch belongs to Firefox — otherwise five seconds
+        // go missing on every switch.
         assert_eq!(closed.segment.duration(), DurationSpec::from_secs(10));
-        assert!(b.is_open(), "Konsole läuft jetzt");
+        assert!(b.is_open(), "konsole is running now");
     }
 
     #[test]
-    fn untaetigkeit_schliesst_das_segment() {
+    fn going_idle_closes_the_segment() {
         let mut b = builder();
         b.observe(&active(0, "firefox"));
         b.observe(&active(5, "firefox"));
-        let closed = b.observe(&Tick::Idle { at: ts(10) }).expect("Segment");
+        let closed = b.observe(&Tick::Idle { at: ts(10) }).expect("a segment");
         assert_eq!(closed.reason, CloseReason::BecameIdle);
         assert_eq!(closed.segment.duration(), DurationSpec::from_secs(10));
         assert!(!b.is_open());
-        // Weitere Idle-Ticks erzeugen nichts.
+        // Further idle ticks produce nothing.
         assert!(b.observe(&Tick::Idle { at: ts(15) }).is_none());
     }
 
     #[test]
-    fn suspend_wird_nicht_als_nutzung_gezaehlt() {
+    fn suspend_is_not_counted_as_usage() {
         let mut b = builder();
         b.observe(&active(0, "firefox"));
         b.observe(&active(5, "firefox"));
-        // Deckel zu, vier Stunden später wieder auf.
-        let closed = b.observe(&active(4 * 3600, "firefox")).expect("Segment");
+        // Lid closed, reopened four hours later.
+        let closed = b.observe(&active(4 * 3600, "firefox")).expect("a segment");
         assert_eq!(closed.reason, CloseReason::Gap);
         assert_eq!(
             closed.segment.duration(),
             DurationSpec::from_secs(5),
-            "nur die tatsächlich beobachteten 5 Sekunden"
+            "only the five seconds actually observed"
         );
-        // Danach läuft ein neues Segment ab dem Aufwachen.
-        let next = b.flush(ts(4 * 3600 + 10)).expect("Segment");
+        // A fresh segment then runs from the moment of waking.
+        let next = b.flush(ts(4 * 3600 + 10)).expect("a segment");
         assert_eq!(next.segment.duration(), DurationSpec::from_secs(10));
     }
 
     #[test]
-    fn rueckwaerts_springende_uhr_erzeugt_kein_kaputtes_segment() {
+    fn a_backwards_clock_jump_produces_no_broken_segment() {
         let mut b = builder();
         b.observe(&active(1000, "firefox"));
         b.observe(&active(1005, "firefox"));
-        let closed = b.observe(&active(0, "firefox")).expect("Segment");
+        let closed = b.observe(&active(0, "firefox")).expect("a segment");
         assert_eq!(closed.reason, CloseReason::ClockWentBackwards);
         assert!(!closed.segment.is_empty());
         assert!(closed.segment.end > closed.segment.start);
@@ -410,7 +407,7 @@ mod tests {
     }
 
     #[test]
-    fn lange_nutzung_wird_in_stuecke_geschnitten() {
+    fn long_usage_is_cut_into_pieces() {
         let mut b = SegmentBuilder::new(
             "kid",
             SegmentConfig {
@@ -426,36 +423,36 @@ mod tests {
         }
         assert!(
             closed.len() >= 3,
-            "mindestens drei Stücke, war {}",
+            "at least three pieces, got {}",
             closed.len()
         );
         assert!(closed.iter().all(|c| c.reason == CloseReason::MaxLength));
-        // Die Stücke müssen lückenlos aneinander anschließen.
+        // The pieces must join without a hole.
         for pair in closed.windows(2) {
             assert_eq!(pair[0].segment.end, pair[1].segment.start);
         }
     }
 
     #[test]
-    fn schneller_wechsel_verschluckt_keine_zeit() {
+    fn a_quick_switch_loses_no_time() {
         let mut b = builder();
         b.observe(&active(0, "firefox"));
-        let closed = b.observe(&active(5, "konsole")).expect("Segment");
+        let closed = b.observe(&active(5, "konsole")).expect("a segment");
         assert_eq!(closed.segment.duration(), DurationSpec::from_secs(5));
     }
 
     #[test]
-    fn einzelner_tick_ohne_dauer_bekommt_das_tick_intervall() {
-        // Fährt der Rechner unmittelbar nach dem ersten Tick herunter, hätte das
-        // Segment die Dauer null und würde verworfen.
+    fn a_single_tick_with_no_duration_is_credited_one_interval() {
+        // If the machine shuts down right after the first tick, the segment
+        // would otherwise have zero duration and be discarded.
         let mut b = builder();
         b.observe(&active(0, "firefox"));
-        let closed = b.flush(ts(0)).expect("Segment");
+        let closed = b.flush(ts(0)).expect("a segment");
         assert_eq!(closed.segment.duration(), DurationSpec::from_secs(5));
     }
 
     #[test]
-    fn genauere_quelle_wertet_das_laufende_segment_auf() {
+    fn a_more_precise_source_upgrades_the_open_segment() {
         let mut b = builder();
         b.observe(&Tick::Active {
             at: ts(0),
@@ -473,12 +470,12 @@ mod tests {
             },
             title: None,
         });
-        let closed = b.flush(ts(10)).expect("Segment");
+        let closed = b.flush(ts(10)).expect("a segment");
         assert_eq!(closed.segment.source, AppIdSource::DesktopFile);
     }
 
     #[test]
-    fn jedes_segment_bekommt_eine_eigene_id() {
+    fn every_segment_gets_its_own_id() {
         let mut b = builder();
         b.observe(&active(0, "firefox"));
         let a = b.observe(&active(5, "konsole")).unwrap().segment.id;
@@ -487,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn summiert_je_anwendung_stabil_sortiert() {
+    fn totals_per_application_sort_stably() {
         let mut b = builder();
         let mut segs = Vec::new();
         let mut push = |c: Option<ClosedSegment>| {

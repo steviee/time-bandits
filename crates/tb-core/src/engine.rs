@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Die Entscheidungs-Engine: Policy + bisherige Nutzung + Uhrzeit → Urteil.
+//! The decision engine: policy + recorded usage + current time → verdict.
 //!
-//! Bewusst eine reine Funktion ohne Uhr, Dateisystem oder Netz. Genau dieselbe
-//! Funktion beantwortet drei Fragen, die sonst auseinanderlaufen würden:
+//! Deliberately a pure function with no clock, filesystem or network access.
+//! The same function answers three questions that would otherwise drift apart:
 //!
-//! * Daemon, jede Sekunde: „muss ich jetzt sperren?“
-//! * PAM-Modul, beim Anmelden: „darf sich dieser Benutzer anmelden?“
-//! * Plasmoid/PWA: „wieviel Zeit ist noch übrig?“
+//! * the daemon, every tick: "do I have to lock now?"
+//! * the PAM module, at login: "may this user log in?"
+//! * the plasmoid and web UI: "how much time is left?"
 
 use jiff::civil;
 use jiff::tz::TimeZone;
@@ -19,30 +19,30 @@ use crate::duration::DurationSpec;
 use crate::policy::{Policy, Quota};
 use crate::schedule::{Day, PolicyDay, TimeWindow, policy_day, policy_day_end};
 
-/// Die Nutzungsdaten, gegen die eine Policy ausgewertet wird.
+/// The usage figures a policy is evaluated against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct UsageSnapshot {
-    /// Angerechnete Zeit im laufenden Policy-Tag.
+    /// Time credited during the running policy day.
     pub used_today: DurationSpec,
-    /// Angerechnete Zeit in der laufenden Policy-Woche (Montag–Sonntag).
+    /// Time credited during the running policy week (Monday–Sunday).
     pub used_this_week: DurationSpec,
-    /// Für heute gewährte Bonuszeit. Zählt nur auf das Tageskontingent.
+    /// Bonus time granted for today. Counts against the daily quota only.
     pub bonus_today: DurationSpec,
 }
 
-/// Welche Regel die Restzeit gerade begrenzt.
+/// Which rule is currently capping the remaining time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LimitedBy {
-    /// Nichts begrenzt — Beobachtungsmodus oder ausschließlich unbegrenzte Kontingente.
+    /// Nothing caps it — observe-only mode, or every quota is unlimited.
     Nothing,
     DailyQuota,
     WeeklyQuota,
-    /// Das laufende Zeitfenster endet vor dem Kontingent.
+    /// The current time window closes before the quota runs out.
     Window,
 }
 
-/// Warum eine Anmeldung oder Sitzung verweigert wird.
+/// Why a login or session is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DenyReason {
@@ -52,8 +52,8 @@ pub enum DenyReason {
 }
 
 impl DenyReason {
-    /// Kurzschlüssel für Übersetzungen. Der angezeigte Text wird in der jeweiligen
-    /// Oberfläche lokalisiert; das PAM-Modul hat eine eigene, knappe Fassung.
+    /// Short key for translations. The visible text is localized by each front
+    /// end; the PAM module carries its own terse wording.
     #[must_use]
     pub const fn message_key(self) -> &'static str {
         match self {
@@ -64,30 +64,30 @@ impl DenyReason {
     }
 }
 
-/// Das Ergebnis einer Auswertung.
+/// The result of an evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Allowed(Allowance),
     Denied(Denial),
 }
 
-/// Nutzung ist erlaubt — mit dieser Restzeit.
+/// Use is permitted, with this much time left.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Allowance {
-    /// Kleinste Restzeit über alle greifenden Regeln. `None` = unbegrenzt.
+    /// Smallest remaining time across all applicable rules. `None` = unlimited.
     pub remaining: Option<DurationSpec>,
     pub limited_by: LimitedBy,
-    /// Zeitpunkt, zu dem die Restzeit ausläuft. `None` = unbegrenzt.
+    /// When the remaining time runs out. `None` = unlimited.
     pub expires_at: Option<Zoned>,
-    /// Nächste Warnschwelle, die noch aussteht.
+    /// The next warning threshold still ahead.
     pub next_warning: Option<DurationSpec>,
 }
 
-/// Nutzung ist gesperrt.
+/// Use is blocked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Denial {
     pub reason: DenyReason,
-    /// Wann es wieder erlaubt ist. `None`, wenn das nicht bestimmbar ist.
+    /// When it becomes allowed again. `None` if that cannot be determined.
     pub retry_at: Option<Zoned>,
 }
 
@@ -105,7 +105,7 @@ impl Verdict {
         }
     }
 
-    /// Restzeit, oder `ZERO` bei Sperre.
+    /// Remaining time, or `ZERO` when blocked.
     #[must_use]
     pub fn remaining(&self) -> Option<DurationSpec> {
         match self {
@@ -115,18 +115,18 @@ impl Verdict {
     }
 }
 
-/// Ein Zeitfenster als konkretes Intervall auf der Zeitachse.
+/// A time window pinned to actual instants on the timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Interval {
     start: Zoned,
     end: Zoned,
 }
 
-/// Rechnet die Wanduhr-Fenster eines Policy-Tages in echte Zeitpunkte um.
+/// Turns the wall-clock windows of one policy day into real instants.
 ///
-/// Ein Fenster, dessen Startzeit vor `day_start` liegt, gehört zur *zweiten*
-/// Hälfte des Policy-Tages und damit auf den Folgetag im Kalender. Dadurch
-/// funktionieren Fenster über Mitternacht (22:00–01:00) ohne Sonderfall.
+/// A window whose start time falls before `day_start` belongs to the *second*
+/// half of the policy day and therefore to the next calendar date. That single
+/// rule makes windows across midnight (22:00–01:00) work without a special case.
 fn concrete_windows(
     pd: PolicyDay,
     windows: &[TimeWindow],
@@ -147,7 +147,7 @@ fn concrete_windows(
         .filter_map(|w| {
             let start = resolve(w.start)?;
             let mut end = resolve(w.end)?;
-            // Fenster über Mitternacht: das Ende liegt einen Tag später.
+            // Window across midnight: the end lands one day later.
             if end <= start {
                 end = end.checked_add(Span::new().days(1)).ok()?;
             }
@@ -157,9 +157,8 @@ fn concrete_windows(
 
     out.sort_by(|a, b| a.start.cmp(&b.start));
 
-    // Aneinandergrenzende oder überlappende Fenster verschmelzen, sonst würde
-    // bei 15:00–17:00 plus 17:00–19:00 um 17:00 fälschlich „Fenster zu Ende“
-    // gemeldet und die Sitzung gesperrt.
+    // Merge touching or overlapping windows. Without this, 15:00–17:00 plus
+    // 17:00–19:00 would report "window closed" at 17:00 and lock the session.
     let mut merged: Vec<Interval> = Vec::with_capacity(out.len());
     for iv in out {
         match merged.last_mut() {
@@ -174,7 +173,7 @@ fn concrete_windows(
     merged
 }
 
-/// Sammelt Fenster über mehrere Policy-Tage, um „wann wieder?“ beantworten zu können.
+/// Collects windows across several policy days so "when again?" can be answered.
 fn upcoming_windows(policy: &Policy, from: PolicyDay, tz: &TimeZone, days: i32) -> Vec<Interval> {
     let mut all = Vec::new();
     for offset in 0..days {
@@ -194,7 +193,7 @@ fn upcoming_windows(policy: &Policy, from: PolicyDay, tz: &TimeZone, days: i32) 
     all
 }
 
-/// Beginn der Policy-Woche (Montag) für einen Policy-Tag.
+/// Start of the policy week (Monday) for a policy day.
 fn week_start(pd: PolicyDay) -> civil::Date {
     let back = i32::from(pd.date.weekday().to_monday_zero_offset());
     pd.date
@@ -202,11 +201,11 @@ fn week_start(pd: PolicyDay) -> civil::Date {
         .unwrap_or(pd.date)
 }
 
-/// Wertet eine Policy gegen Nutzung und Zeitpunkt aus.
+/// Evaluates a policy against usage at a point in time.
 ///
-/// Schlägt die Zeitzonen-Auflösung fehl, wird auf UTC zurückgefallen statt zu
-/// scheitern: eine unlesbare Zeitzone darf kein Kind aussperren, und die Policy
-/// wurde beim Laden ohnehin schon validiert.
+/// If the time zone cannot be resolved we fall back to UTC rather than failing:
+/// an unreadable zone must not lock a child out, and the policy was validated
+/// when it was loaded anyway.
 #[must_use]
 pub fn evaluate(policy: &Policy, usage: &UsageSnapshot, now: &Zoned) -> Verdict {
     if !policy.enforcement {
@@ -222,7 +221,7 @@ pub fn evaluate(policy: &Policy, usage: &UsageSnapshot, now: &Zoned) -> Verdict 
     let now = now.with_time_zone(tz.clone());
     let pd = policy_day(&now, policy.day_start);
 
-    // --- 1. Zeitfenster (Bettzeit) -------------------------------------------
+    // --- 1. Time windows (bedtime) -------------------------------------------
     let windows = policy.allowed_windows.get(pd.day);
     let mut window_end: Option<Zoned> = None;
     if !windows.is_empty() {
@@ -241,7 +240,7 @@ pub fn evaluate(policy: &Policy, usage: &UsageSnapshot, now: &Zoned) -> Verdict 
         }
     }
 
-    // --- 2. Tageskontingent (inklusive Bonus) --------------------------------
+    // --- 2. Daily quota (bonus included) -------------------------------------
     let daily_limit = policy
         .daily_quota
         .get(pd.day)
@@ -255,13 +254,13 @@ pub fn evaluate(policy: &Policy, usage: &UsageSnapshot, now: &Zoned) -> Verdict 
         });
     }
 
-    // --- 3. Wochenkontingent -------------------------------------------------
+    // --- 3. Weekly quota -----------------------------------------------------
     let weekly_remaining = match policy.weekly_quota {
         Quota::Unlimited => None,
         Quota::Limited(l) => Some(l.saturating_sub(usage.used_this_week)),
     };
     if weekly_remaining == Some(DurationSpec::ZERO) {
-        // Wieder frei am Montag zum Tagesbeginn der neuen Woche.
+        // Available again on Monday, when the new policy week starts.
         let retry_at = week_start(pd)
             .checked_add(Span::new().days(7))
             .ok()
@@ -272,10 +271,10 @@ pub fn evaluate(policy: &Policy, usage: &UsageSnapshot, now: &Zoned) -> Verdict 
         });
     }
 
-    // --- 4. Kleinste greifende Schranke bestimmen ----------------------------
-    // `duration_until` statt Span-Subtraktion: ein `Span` ist kalendarisch und
-    // balanciert sich auf Stunden/Minuten auf, `get_seconds()` liefert dann nur
-    // die Sekunden-Komponente — nicht die Gesamtdauer.
+    // --- 4. Pick the tightest applicable bound -------------------------------
+    // `duration_until` rather than span subtraction: a `Span` is calendar-aware
+    // and balances into hours and minutes, so `get_seconds()` would return only
+    // the seconds component instead of the total.
     let window_remaining = window_end.as_ref().and_then(|end| {
         let secs = now.duration_until(end).as_secs();
         u64::try_from(secs).ok().map(DurationSpec::from_secs)
@@ -333,7 +332,7 @@ mod tests {
             .unwrap()
     }
 
-    /// Policy mit aktiver Durchsetzung, 2 h täglich, sonst keine Einschränkung.
+    /// Enforcing policy, 2 h per day, no other restriction.
     fn policy_2h() -> Policy {
         let mut p = Policy::permissive("kid");
         p.enforcement = true;
@@ -350,27 +349,27 @@ mod tests {
     }
 
     #[test]
-    fn beobachtungsmodus_erlaubt_immer() {
+    fn observe_only_mode_always_allows() {
         let p = Policy::permissive("kid"); // enforcement = false
         let v = evaluate(&p, &used(10_000), &at(2026, 8, 19, 3, 0));
         assert!(v.is_allowed());
-        assert_eq!(v.remaining(), None, "unbegrenzt");
+        assert_eq!(v.remaining(), None, "unlimited");
     }
 
     #[test]
-    fn restzeit_ergibt_sich_aus_tageskontingent() {
+    fn remaining_time_comes_from_the_daily_quota() {
         let v = evaluate(&policy_2h(), &used(90), &at(2026, 8, 19, 16, 0));
         let Verdict::Allowed(a) = v else {
-            panic!("erwartet erlaubt")
+            panic!("expected allowed")
         };
         assert_eq!(a.remaining, Some(DurationSpec::from_mins(30)));
         assert_eq!(a.limited_by, LimitedBy::DailyQuota);
     }
 
     #[test]
-    fn aufgebrauchtes_tageskontingent_sperrt_bis_tagesbeginn() {
+    fn exhausted_daily_quota_blocks_until_the_next_policy_day() {
         let v = evaluate(&policy_2h(), &used(120), &at(2026, 8, 19, 16, 0));
-        let d = v.denial().expect("erwartet gesperrt");
+        let d = v.denial().expect("expected denied");
         assert_eq!(d.reason, DenyReason::DailyQuotaExhausted);
         let retry = d.retry_at.as_ref().unwrap();
         assert_eq!(retry.date(), civil::date(2026, 8, 20));
@@ -378,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn bonus_hebt_die_sperre_sofort_auf() {
+    fn bonus_lifts_the_block_immediately() {
         let usage = UsageSnapshot {
             used_today: DurationSpec::from_mins(120),
             bonus_today: DurationSpec::from_mins(30),
@@ -389,15 +388,15 @@ mod tests {
     }
 
     #[test]
-    fn ausserhalb_des_zeitfensters_wird_gesperrt() {
+    fn outside_the_time_window_is_blocked() {
         let mut p = policy_2h();
         p.allowed_windows = WeekSchedule::uniform(vec![TimeWindow::new(
             civil::time(15, 0, 0, 0),
             civil::time(19, 0, 0, 0),
         )]);
-        // 20:00 liegt hinter dem Fenster → gesperrt bis morgen 15:00.
+        // 20:00 is past the window → blocked until tomorrow 15:00.
         let v = evaluate(&p, &used(0), &at(2026, 8, 19, 20, 0));
-        let d = v.denial().expect("erwartet gesperrt");
+        let d = v.denial().expect("expected denied");
         assert_eq!(d.reason, DenyReason::OutsideAllowedWindow);
         let retry = d.retry_at.as_ref().unwrap();
         assert_eq!(retry.date(), civil::date(2026, 8, 20));
@@ -405,57 +404,61 @@ mod tests {
     }
 
     #[test]
-    fn fensterende_begrenzt_die_restzeit() {
+    fn the_window_close_caps_remaining_time() {
         let mut p = policy_2h();
         p.allowed_windows = WeekSchedule::uniform(vec![TimeWindow::new(
             civil::time(15, 0, 0, 0),
             civil::time(19, 0, 0, 0),
         )]);
-        // 18:30, noch 2 h Kontingent — aber das Fenster endet in 30 Minuten.
+        // 18:30 with a full 2 h quota — but the window closes in 30 minutes.
         let v = evaluate(&p, &used(0), &at(2026, 8, 19, 18, 30));
         let Verdict::Allowed(a) = v else {
-            panic!("erwartet erlaubt")
+            panic!("expected allowed")
         };
         assert_eq!(a.remaining, Some(DurationSpec::from_mins(30)));
         assert_eq!(a.limited_by, LimitedBy::Window);
     }
 
     #[test]
-    fn angrenzende_fenster_werden_verschmolzen() {
+    fn touching_windows_are_merged() {
         let mut p = policy_2h();
         p.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
         p.allowed_windows = WeekSchedule::uniform(vec![
             TimeWindow::new(civil::time(15, 0, 0, 0), civil::time(17, 0, 0, 0)),
             TimeWindow::new(civil::time(17, 0, 0, 0), civil::time(19, 0, 0, 0)),
         ]);
-        // Genau an der Nahtstelle darf nicht gesperrt werden.
+        // The seam between the two windows must not lock the session.
         let v = evaluate(&p, &used(0), &at(2026, 8, 19, 17, 0));
         let Verdict::Allowed(a) = v else {
-            panic!("Naht zwischen Fenstern darf nicht sperren")
+            panic!("the seam between windows must not block")
         };
-        assert_eq!(a.remaining, Some(DurationSpec::from_hours(2)), "bis 19:00");
+        assert_eq!(
+            a.remaining,
+            Some(DurationSpec::from_hours(2)),
+            "until 19:00"
+        );
     }
 
     #[test]
-    fn fenster_ueber_mitternacht_gilt_im_selben_policy_tag() {
+    fn a_window_across_midnight_stays_in_the_same_policy_day() {
         let mut p = policy_2h();
         p.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
         p.allowed_windows = WeekSchedule::uniform(vec![TimeWindow::new(
             civil::time(22, 0, 0, 0),
             civil::time(1, 0, 0, 0),
         )]);
-        // 00:30 am 20.08. gehört zum Policy-Tag 19.08. und liegt im Fenster.
+        // 00:30 on the 20th belongs to policy day the 19th, inside the window.
         let v = evaluate(&p, &used(0), &at(2026, 8, 20, 0, 30));
         let Verdict::Allowed(a) = v else {
-            panic!("erwartet erlaubt")
+            panic!("expected allowed")
         };
         assert_eq!(a.remaining, Some(DurationSpec::from_mins(30)));
-        // 01:30 liegt dahinter.
+        // 01:30 is past it.
         assert!(!evaluate(&p, &used(0), &at(2026, 8, 20, 1, 30)).is_allowed());
     }
 
     #[test]
-    fn wochenkontingent_greift_vor_tageskontingent() {
+    fn the_weekly_quota_can_bind_before_the_daily_one() {
         let mut p = policy_2h();
         p.weekly_quota = Quota::Limited(DurationSpec::from_hours(10));
         let usage = UsageSnapshot {
@@ -465,23 +468,23 @@ mod tests {
         };
         let v = evaluate(&p, &usage, &at(2026, 8, 19, 16, 0));
         let Verdict::Allowed(a) = v else {
-            panic!("erwartet erlaubt")
+            panic!("expected allowed")
         };
         assert_eq!(a.remaining, Some(DurationSpec::from_mins(15)));
         assert_eq!(a.limited_by, LimitedBy::WeeklyQuota);
     }
 
     #[test]
-    fn aufgebrauchtes_wochenkontingent_sperrt_bis_montag() {
+    fn exhausted_weekly_quota_blocks_until_monday() {
         let mut p = policy_2h();
         p.weekly_quota = Quota::Limited(DurationSpec::from_hours(10));
         let usage = UsageSnapshot {
             used_this_week: DurationSpec::from_hours(10),
             ..UsageSnapshot::default()
         };
-        // 19.08.2026 ist ein Mittwoch → nächster Montag ist der 24.08.
+        // 2026-08-19 is a Wednesday, so the next Monday is the 24th.
         let v = evaluate(&p, &usage, &at(2026, 8, 19, 16, 0));
-        let d = v.denial().expect("erwartet gesperrt");
+        let d = v.denial().expect("expected denied");
         assert_eq!(d.reason, DenyReason::WeeklyQuotaExhausted);
         let retry = d.retry_at.as_ref().unwrap();
         assert_eq!(retry.date(), civil::date(2026, 8, 24));
@@ -490,21 +493,21 @@ mod tests {
     }
 
     #[test]
-    fn naechste_warnschwelle_liegt_unter_der_restzeit() {
-        // 2 h Kontingent, 1 h 50 min verbraucht → 10 min übrig, nächste Warnung bei 5 min.
+    fn the_next_warning_is_below_the_remaining_time() {
+        // 2 h quota, 1 h 50 min used → 10 min left, next warning at 5 min.
         let v = evaluate(&policy_2h(), &used(110), &at(2026, 8, 19, 16, 0));
         let Verdict::Allowed(a) = v else { panic!() };
         assert_eq!(a.next_warning, Some(DurationSpec::from_mins(5)));
-        // 25 min übrig → nächste Warnung bei 15 min.
+        // 25 min left → next warning at 15 min.
         let v = evaluate(&policy_2h(), &used(95), &at(2026, 8, 19, 16, 0));
         let Verdict::Allowed(a) = v else { panic!() };
         assert_eq!(a.next_warning, Some(DurationSpec::from_mins(15)));
     }
 
     #[test]
-    fn nutzung_ueber_dem_kontingent_sperrt_statt_zu_ueberlaufen() {
-        // Falls der Daemon offline war und mehr Zeit gebucht wurde als erlaubt,
-        // darf die sättigende Subtraktion nicht plötzlich wieder Zeit gewähren.
+    fn usage_beyond_the_quota_blocks_instead_of_wrapping() {
+        // If the daemon was offline and booked more time than allowed, the
+        // saturating subtraction must not hand out time again.
         let v = evaluate(&policy_2h(), &used(500), &at(2026, 8, 19, 16, 0));
         assert_eq!(
             v.denial().map(|d| d.reason),
@@ -513,13 +516,13 @@ mod tests {
     }
 
     #[test]
-    fn tag_mit_kontingent_null_sperrt_ganztaegig() {
+    fn a_day_with_zero_quota_blocks_all_day() {
         let mut p = policy_2h();
         p.daily_quota
             .set(Day::Monday, Quota::Limited(DurationSpec::ZERO));
-        // 24.08.2026 ist ein Montag.
+        // 2026-08-24 is a Monday.
         assert!(!evaluate(&p, &used(0), &at(2026, 8, 24, 10, 0)).is_allowed());
-        // Dienstag wieder normal.
+        // Tuesday is normal again.
         assert!(evaluate(&p, &used(0), &at(2026, 8, 25, 10, 0)).is_allowed());
     }
 }

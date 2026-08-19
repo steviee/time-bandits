@@ -1,11 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Time Bandits contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Die Regeln, die für einen verwalteten Benutzer gelten.
+//! The rules that apply to one managed user.
 //!
-//! Eine `Policy` ist reine Konfiguration: sie beschreibt, *was* erlaubt ist, aber
-//! kennt weder die bisherige Nutzung noch die aktuelle Uhrzeit. Die Auswertung
-//! macht [`crate::engine`].
+//! A `Policy` is pure configuration: it describes *what* is allowed but knows
+//! neither past usage nor the current time. Evaluation lives in [`crate::engine`].
 
 use jiff::civil;
 use serde::{Deserialize, Serialize};
@@ -13,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use crate::duration::DurationSpec;
 use crate::schedule::{Day, TimeWindow, WeekSchedule};
 
-/// Ein Kontingent — entweder begrenzt oder ausdrücklich unbegrenzt.
+/// A quota — either limited or explicitly unlimited.
 ///
-/// Eigener Typ statt `Option<DurationSpec>`, damit „unbegrenzt“ in der
-/// Konfiguration sichtbar dasteht (`"unlimited"`) und nicht durch ein fehlendes
-/// Feld entsteht. Ein vergessenes Feld darf nie versehentlich alles freigeben.
+/// A dedicated type rather than `Option<DurationSpec>` so "unlimited" is spelled
+/// out in the configuration instead of arising from a *missing* field. A
+/// forgotten field must never silently grant unrestricted access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Quota {
     #[default]
@@ -34,7 +33,7 @@ impl Quota {
         }
     }
 
-    /// Verbleibendes Kontingent nach `used`, oder `None` bei unbegrenzt.
+    /// Quota left after `used`, or `None` when unlimited.
     #[must_use]
     pub fn remaining(self, used: DurationSpec) -> Option<DurationSpec> {
         self.limit().map(|l| l.saturating_sub(used))
@@ -59,10 +58,10 @@ impl<'de> Deserialize<'de> for Quota {
         impl Visitor<'_> for V {
             type Value = Quota;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("`unlimited` oder eine Dauer wie `2h`")
+                f.write_str("`unlimited` or a duration such as `2h`")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Quota, E> {
-                if v.eq_ignore_ascii_case("unlimited") || v.eq_ignore_ascii_case("unbegrenzt") {
+                if v.eq_ignore_ascii_case("unlimited") {
                     return Ok(Quota::Unlimited);
                 }
                 v.parse().map(Quota::Limited).map_err(de::Error::custom)
@@ -73,83 +72,83 @@ impl<'de> Deserialize<'de> for Quota {
             fn visit_i64<E: de::Error>(self, v: i64) -> Result<Quota, E> {
                 u64::try_from(v)
                     .map(|m| Quota::Limited(DurationSpec::from_mins(m)))
-                    .map_err(|_| de::Error::custom("negatives Kontingent"))
+                    .map_err(|_| de::Error::custom("negative quota"))
             }
         }
         de.deserialize_any(V)
     }
 }
 
-/// Was passiert, wenn das Kontingent aufgebraucht ist.
+/// What happens once the quota runs out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LockAction {
-    /// Sitzung sperren. Das Entsperren scheitert am PAM-Modul.
+    /// Lock the session. Unlocking then fails in the PAM module.
     #[default]
     Lock,
-    /// Sitzung nach der Schonfrist beenden. Ungespeicherte Arbeit geht verloren.
+    /// End the session after the grace period. Unsaved work is lost.
     Terminate,
-    /// Erst sperren, nach der Schonfrist zusätzlich beenden.
+    /// Lock first, then terminate once the grace period expires.
     LockThenTerminate,
 }
 
-/// Verhalten, wenn die Erfassung nachweislich manipuliert wurde
-/// (Agent gekillt, KWin-Skript deaktiviert).
+/// How to react when tracking was demonstrably tampered with (agent killed,
+/// KWin script disabled).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TamperResponse {
-    /// Weiterzählen, App als `unknown` buchen, Ereignis melden. Vorgabe.
+    /// Keep counting, attribute time to `unknown`, report the event. Default.
     #[default]
     CountAndReport,
-    /// Sofort sperren. Für ältere Kinder, die gezielt austricksen.
+    /// Lock right away. For older children who game the system deliberately.
     LockImmediately,
 }
 
-/// Die vollständige Regelmenge für einen Benutzer.
+/// The complete rule set for one user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
-    /// Monoton steigend. Der Client übernimmt nur neuere Versionen vom Hub.
+    /// Monotonically increasing. A client only adopts newer versions from the hub.
     pub version: u64,
 
-    /// Betroffener Unix-Benutzername.
+    /// The Unix user this applies to.
     pub subject: String,
 
-    /// Ist die Durchsetzung aktiv? `false` = reiner Beobachtungsmodus.
+    /// Is enforcement active? `false` means observe-only.
     #[serde(default = "default_true")]
     pub enforcement: bool,
 
-    /// IANA-Zeitzone, in der Tagesgrenzen und Zeitfenster gelten.
+    /// IANA time zone that day boundaries and windows are expressed in.
     #[serde(default = "default_timezone")]
     pub timezone: String,
 
-    /// Beginn des Policy-Tages. Vorgabe 04:00, damit die Nacht zum Vortag zählt.
+    /// Start of the policy day. 04:00 by default so late evenings count towards
+    /// the day they started on.
     #[serde(default = "default_day_start")]
     pub day_start: civil::Time,
 
-    /// Tageskontingent je Wochentag.
+    /// Daily quota per weekday.
     #[serde(default = "default_daily_quota")]
     pub daily_quota: WeekSchedule<Quota>,
 
-    /// Zusätzliche Obergrenze über die gesamte Woche (Montag–Sonntag).
+    /// Additional ceiling across the whole week (Monday–Sunday).
     #[serde(default)]
     pub weekly_quota: Quota,
 
-    /// Erlaubte Zeitfenster je Wochentag. **Leere Liste = ganztägig erlaubt.**
-    /// Ein Tag, an dem gar nichts erlaubt sein soll, bekommt stattdessen
-    /// `daily_quota = "0s"`.
+    /// Allowed windows per weekday. **An empty list means all day.** A day on
+    /// which nothing should be allowed gets `daily_quota = "0s"` instead.
     #[serde(default = "default_windows")]
     pub allowed_windows: WeekSchedule<Vec<TimeWindow>>,
 
-    /// Restzeiten, bei denen gewarnt wird. Absteigend sortiert erwartet.
+    /// Remaining-time thresholds that trigger a warning.
     #[serde(default = "default_warnings")]
     pub warnings: Vec<DurationSpec>,
 
-    /// Schonfrist zum Speichern zwischen Sperre und Beendigung.
+    /// Grace period between locking and terminating, to save open work.
     #[serde(default = "default_grace")]
     pub grace_period: DurationSpec,
 
-    /// Ab welcher Untätigkeit die Zeit nicht mehr zählt.
+    /// How much inactivity stops the clock.
     #[serde(default = "default_idle")]
     pub idle_threshold: DurationSpec,
 
@@ -159,7 +158,7 @@ pub struct Policy {
     #[serde(default)]
     pub on_tamper: TamperResponse,
 
-    /// Fenstertitel mitschreiben. Vorgabe `false` — Datensparsamkeit.
+    /// Record window titles. Defaults to `false` — collect as little as possible.
     #[serde(default)]
     pub record_window_titles: bool,
 }
@@ -194,8 +193,8 @@ fn default_idle() -> DurationSpec {
 }
 
 impl Policy {
-    /// Eine Policy, die nichts einschränkt — Ausgangspunkt für neue Benutzer und
-    /// das, was der Beobachtungsmodus (M1) verwendet.
+    /// A policy that restricts nothing — the starting point for new users and
+    /// what observe-only mode (M1) runs with.
     #[must_use]
     pub fn permissive(subject: impl Into<String>) -> Self {
         Self {
@@ -216,7 +215,7 @@ impl Policy {
         }
     }
 
-    /// Warnschwellen absteigend und ohne Duplikate.
+    /// Warning thresholds, descending and deduplicated.
     #[must_use]
     pub fn sorted_warnings(&self) -> Vec<DurationSpec> {
         let mut w = self.warnings.clone();
@@ -225,10 +224,10 @@ impl Policy {
         w
     }
 
-    /// Prüft die Policy auf Widersprüche, bevor sie übernommen wird.
+    /// Checks the policy for contradictions before it is adopted.
     ///
-    /// Wird sowohl im Hub beim Speichern als auch im Daemon beim Laden
-    /// aufgerufen — eine kaputte Policy darf nie zur Sperre führen.
+    /// Called both by the hub on save and by the daemon on load — a broken
+    /// policy must never turn into a lockout.
     pub fn validate(&self) -> Result<(), PolicyError> {
         if self.subject.trim().is_empty() {
             return Err(PolicyError::EmptySubject);
@@ -243,8 +242,8 @@ impl Policy {
                     return Err(PolicyError::EmptyWindow { day, window: *w });
                 }
             }
-            // Ein Tag mit Fenstern, aber Kontingent 0, ist widersprüchlich
-            // konfiguriert — vermutlich ein Versehen in der Oberfläche.
+            // Windows plus a zero quota is a contradiction — almost certainly a
+            // mistake made in the editing UI.
             if !windows.is_empty() && self.daily_quota.get(day).limit() == Some(DurationSpec::ZERO)
             {
                 return Err(PolicyError::WindowsWithZeroQuota(day));
@@ -268,18 +267,18 @@ impl Policy {
     }
 }
 
-/// Gründe, aus denen eine Policy abgelehnt wird.
+/// Reasons a policy is rejected.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PolicyError {
-    #[error("Policy ohne Benutzernamen")]
+    #[error("policy has no subject")]
     EmptySubject,
-    #[error("unbekannte Zeitzone `{0}`")]
+    #[error("unknown time zone `{0}`")]
     UnknownTimezone(String),
-    #[error("Zeitfenster {window} am {day} ist leer (Start gleich Ende)")]
+    #[error("time window {window} on {day} is empty (start equals end)")]
     EmptyWindow { day: Day, window: TimeWindow },
-    #[error("{0}: Zeitfenster gesetzt, aber Tageskontingent ist 0 — widersprüchlich")]
+    #[error("{0}: time windows are set but the daily quota is zero — contradictory")]
     WindowsWithZeroQuota(Day),
-    #[error("Wochenkontingent ist größer als die Summe aller Tageskontingente")]
+    #[error("weekly quota exceeds the sum of all daily quotas and can never be reached")]
     UnreachableWeeklyQuota,
 }
 
@@ -288,7 +287,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quota_serialisiert_lesbar() {
+    fn quota_serializes_readably() {
         assert_eq!(
             serde_json::to_string(&Quota::Unlimited).unwrap(),
             r#""unlimited""#
@@ -308,14 +307,14 @@ mod tests {
     }
 
     #[test]
-    fn permissive_policy_ist_gueltig() {
+    fn permissive_policy_is_valid() {
         let p = Policy::permissive("kid");
         assert!(p.validate().is_ok());
-        assert!(!p.enforcement, "Vorgabe ist Beobachtungsmodus");
+        assert!(!p.enforcement, "observe-only is the default");
     }
 
     #[test]
-    fn validate_faengt_unbekannte_zeitzone() {
+    fn validate_catches_unknown_timezone() {
         let mut p = Policy::permissive("kid");
         p.timezone = "Mars/Olympus_Mons".to_owned();
         assert_eq!(
@@ -325,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_faengt_leeres_zeitfenster() {
+    fn validate_catches_empty_window() {
         let mut p = Policy::permissive("kid");
         let t = civil::time(15, 0, 0, 0);
         p.allowed_windows
@@ -334,23 +333,23 @@ mod tests {
     }
 
     #[test]
-    fn validate_faengt_unerreichbares_wochenkontingent() {
+    fn validate_catches_unreachable_weekly_quota() {
         let mut p = Policy::permissive("kid");
         p.daily_quota = WeekSchedule::uniform(Quota::Limited(DurationSpec::from_hours(1)));
-        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(20)); // max 7h möglich
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(20)); // 7h is the ceiling
         assert_eq!(p.validate(), Err(PolicyError::UnreachableWeeklyQuota));
     }
 
     #[test]
-    fn unbekannte_felder_werden_abgelehnt() {
-        // Schützt vor Tippfehlern in handgeschriebenen Policy-Dateien, die sonst
-        // stillschweigend als „nicht gesetzt“ durchgehen würden.
+    fn unknown_fields_are_rejected() {
+        // Guards against typos in hand-written policy files that would otherwise
+        // silently read as "not configured".
         let json = r#"{"version":1,"subject":"kid","daily_qouta":"2h"}"#;
         assert!(serde_json::from_str::<Policy>(json).is_err());
     }
 
     #[test]
-    fn minimale_policy_bekommt_sichere_vorgaben() {
+    fn minimal_policy_gets_safe_defaults() {
         let p: Policy = serde_json::from_str(r#"{"version":1,"subject":"kid"}"#).unwrap();
         assert_eq!(p.day_start, civil::time(4, 0, 0, 0));
         assert_eq!(p.idle_threshold, DurationSpec::from_mins(2));
