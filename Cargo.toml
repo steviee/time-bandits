@@ -18,8 +18,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/stephan/time-bandits"
-homepage = "https://github.com/stephan/time-bandits"
+repository = "https://github.com/steviee/time-bandits"
+homepage = "https://github.com/steviee/time-bandits"
 authors = ["Time Bandits contributors"]
 
 [workspace.dependencies]
