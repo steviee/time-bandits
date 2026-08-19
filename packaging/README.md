@@ -130,8 +130,22 @@ is a packaging recipe that is broken.
 
 The session agent, the KWin script, the plasmoid and the household server are
 still being built. They will become separate binary packages
-(`time-bandits-plasma`, `time-bandits-hub`) so that installing screen-time
-enforcement on a headless machine does not drag in half of KDE.
+(`time-bandits-plasma`, `time-bandits-hub`).
+
+The split is not about saving disk space. **The enforcing half is not
+KDE-specific at all**: it is built on logind and PAM, which every systemd
+desktop has. The daemon measures session time and locks sessions on GNOME,
+Sway or XFCE exactly as it does on Plasma. Only three pieces are tied to KDE —
+the KWin script that reports which window has focus, the plasmoid, and the
+notification path in the agent.
+
+Keeping those in `time-bandits-plasma` means a GNOME household can install the
+base package today and get quotas, time windows and lockout, losing only the
+per-application breakdown. It also means the equivalent front end for another
+desktop is an added package rather than a fork.
+
+`time-bandits-hub` is the genuinely headless one: it belongs on a Raspberry Pi
+or a NAS and shares nothing with the client beyond the wire protocol.
 
 `tbctl` is not shipped yet either, which is why PAM setup is currently a
 documented manual step rather than one command.
