@@ -102,10 +102,13 @@ dist: vendor
 		git archive --format=tar.gz --prefix=$(DISTNAME)/ -o $(DISTNAME).tar.gz HEAD; \
 	else \
 		echo "no git checkout, packing the working tree"; \
-		tar czf $(DISTNAME).tar.gz --transform 's,^\.,$(DISTNAME),' \
+		tmp=$$(mktemp -d); \
+		tar czf $$tmp/$(DISTNAME).tar.gz --transform 's,^\.,$(DISTNAME),' \
 			--exclude=./target --exclude=./.git --exclude=./vendor \
 			--exclude=./vendor.tar.zst --exclude='./*.tar.gz' \
 			--exclude=./debian --exclude=./node_modules .; \
+		mv $$tmp/$(DISTNAME).tar.gz $(DISTNAME).tar.gz; \
+		rmdir $$tmp; \
 	fi
 	@ls -lh $(DISTNAME).tar.gz vendor.tar.zst
 
