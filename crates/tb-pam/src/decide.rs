@@ -74,8 +74,8 @@ impl Config {
                         _ => Fallback::Deny,
                     }
                 }
-                "managed_group" if !value.is_empty() => cfg.managed_group = value.to_owned(),
-                "exempt_group" if !value.is_empty() => cfg.exempt_group = value.to_owned(),
+                "managed_group" if !value.is_empty() => value.clone_into(&mut cfg.managed_group),
+                "exempt_group" if !value.is_empty() => value.clone_into(&mut cfg.exempt_group),
                 "debug" => cfg.debug = true,
                 _ => {}
             }

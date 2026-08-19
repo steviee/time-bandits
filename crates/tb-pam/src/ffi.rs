@@ -216,7 +216,7 @@ pub fn user_in_group(user: &str, group: &str) -> Option<bool> {
     // `getgrouplist` reports how many groups it needs when the buffer is too
     // small, so ask twice rather than guessing a size.
     let mut ngroups: c_int = 32;
-    let mut groups: Vec<libc::gid_t> = vec![0; ngroups as usize];
+    let mut groups: Vec<libc::gid_t> = vec![0; usize::try_from(ngroups).unwrap_or(32)];
     // SAFETY: buffer and count agree; the call only writes within `ngroups`.
     let rc = unsafe {
         libc::getgrouplist(
@@ -230,7 +230,7 @@ pub fn user_in_group(user: &str, group: &str) -> Option<bool> {
         if ngroups <= 0 || ngroups > 65_536 {
             return None;
         }
-        groups = vec![0; ngroups as usize];
+        groups = vec![0; usize::try_from(ngroups).unwrap_or(0)];
         // SAFETY: buffer resized to the size the previous call asked for.
         let rc = unsafe {
             libc::getgrouplist(

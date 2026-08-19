@@ -28,6 +28,9 @@
 //! managed users, while a crash in our own code is our fault and fails *open*.
 
 #![allow(unsafe_code)]
+// `argc` and `argv` are fixed by the PAM module ABI; renaming them to satisfy
+// the similar-names lint would make the entry points harder to recognise.
+#![allow(clippy::similar_names)]
 
 mod client;
 mod decide;
@@ -242,20 +245,24 @@ mod tests {
 
     #[test]
     fn no_result_the_module_can_produce_means_success() {
-        // The property the module's safety rests on. Enumerating the variants
-        // exhaustively means adding one without revisiting this test fails to
-        // compile rather than silently weakening the guarantee.
-        for result in [
+        // The property the module's safety rests on. The destructuring below
+        // is exhaustive on purpose: adding a fourth variant fails to compile
+        // here rather than silently weakening the guarantee.
+        let all = [
             ModuleResult::Ignore,
             ModuleResult::AuthError,
             ModuleResult::PermissionDenied,
-        ] {
-            let code = match result {
-                ModuleResult::Ignore => result.code(),
-                ModuleResult::AuthError => result.code(),
-                ModuleResult::PermissionDenied => result.code(),
-            };
-            assert_ne!(code, ffi::PAM_SUCCESS, "{result:?} must not mean success");
+        ];
+        for result in all {
+            match result {
+                ModuleResult::Ignore | ModuleResult::AuthError | ModuleResult::PermissionDenied => {
+                }
+            }
+            assert_ne!(
+                result.code(),
+                ffi::PAM_SUCCESS,
+                "{result:?} must not mean success"
+            );
         }
     }
 }
