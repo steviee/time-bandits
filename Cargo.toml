@@ -41,4 +41,7 @@ missing_panics_doc = "allow"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
-panic = "abort"
+# Deliberately NOT panic = "abort": tb-pam builds a cdylib that libpam loads
+# into sddm and the lock screen. An abort there takes the display manager with
+# it and locks the whole household out over what is, by definition, our bug.
+# The module catches unwinds instead and falls back to PAM_IGNORE.

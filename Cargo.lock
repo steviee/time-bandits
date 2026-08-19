@@ -332,16 +332,18 @@ version = "0.1.0"
 [[package]]
 name = "tb-pam"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tb-proto",
+]
 
 [[package]]
 name = "tb-proto"
 version = "0.1.0"
 dependencies = [
- "jiff",
  "serde",
  "serde_json",
- "tb-core",
- "uuid",
 ]
 
 [[package]]
