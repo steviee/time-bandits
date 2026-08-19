@@ -109,10 +109,18 @@ mod tests {
     }
 
     /// Runs a one-shot server that replies with `reply`, optionally after a delay.
+    ///
+    /// It reads the request before answering, exactly as the daemon does. An
+    /// earlier version replied immediately and returned, which dropped the
+    /// stream while the client was still writing its query. On an idle machine
+    /// the client won that race; on a loaded one it got EPIPE, and the test
+    /// failed for a reason that had nothing to do with the code under test.
     fn serve(path: &Path, reply: Option<String>, delay: Duration) -> thread::JoinHandle<()> {
         let listener = UnixListener::bind(path).expect("bind");
         thread::spawn(move || {
             if let Ok((stream, _)) = listener.accept() {
+                let mut request = String::new();
+                let _ = BufReader::new(&stream).read_line(&mut request);
                 thread::sleep(delay);
                 if let Some(reply) = reply {
                     let mut w = BufWriter::new(&stream);
