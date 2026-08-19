@@ -1,0 +1,11 @@
+version = 1
+SPDX-PackageName = "time-bandits"
+SPDX-PackageSupplier = "Time Bandits contributors"
+SPDX-PackageDownloadLocation = "https://github.com/steviee/time-bandits"
+
+# Generated or format-constrained files that cannot carry a comment header.
+[[annotations]]
+path = ["Cargo.lock", ".gitignore"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Time Bandits contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

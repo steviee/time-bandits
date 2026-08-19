@@ -1,7 +1,0 @@
-Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: time-bandits
-Source: https://github.com/steviee/time-bandits
-
-Files: Cargo.lock .gitignore
-Copyright: 2026 Time Bandits contributors
-License: GPL-3.0-or-later

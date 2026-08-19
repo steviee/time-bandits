@@ -20,6 +20,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           experimental: true
+      # tb-pam links against libpam; without this the whole workspace fails to
+      # link, not just that crate.
+      - run: sudo apt-get update && sudo apt-get install -y libpam0g-dev
       - name: Cache cargo
         uses: actions/cache@v4
         with:
