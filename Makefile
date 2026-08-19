@@ -33,7 +33,7 @@ DISTNAME  = time-bandits-$(VERSION)
 all: build
 
 build:
-	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam
+	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam -p tb-cli
 
 check:
 	$(CARGO) test --workspace --locked
@@ -44,6 +44,7 @@ install: install-daemon install-pam install-config
 
 install-daemon:
 	$(INSTALL) -Dm0755 $(TARGETDIR)/timebanditsd $(DESTDIR)$(BINDIR)/timebanditsd
+	$(INSTALL) -Dm0755 $(TARGETDIR)/tbctl $(DESTDIR)$(BINDIR)/tbctl
 	$(INSTALL) -Dm0644 packaging/systemd/timebanditsd.service \
 		$(DESTDIR)$(UNITDIR)/timebanditsd.service
 

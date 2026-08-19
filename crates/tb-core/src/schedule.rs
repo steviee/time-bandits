@@ -72,7 +72,9 @@ impl fmt::Display for Day {
             Self::Saturday => "saturday",
             Self::Sunday => "sunday",
         };
-        f.write_str(s)
+        // `pad`, not `write_str`: the latter silently ignores width and
+        // alignment, which quietly breaks every table this appears in.
+        f.pad(s)
     }
 }
 
@@ -342,6 +344,15 @@ mod tests {
         let start = at(2026, 3, 28, 4, 0);
         let hours = start.duration_until(&end).as_secs() / 3600;
         assert_eq!(hours, 23, "the spring-forward day has 23 hours");
+    }
+
+    #[test]
+    fn weekday_display_honours_column_width() {
+        // A Display impl written with `write_str` ignores width and alignment,
+        // which turns every table it appears in into ragged output.
+        assert_eq!(format!("{:<10}|", Day::Monday), "monday    |");
+        assert_eq!(format!("{:>10}|", Day::Sunday), "    sunday|");
+        assert_eq!(format!("{}", Day::Friday), "friday");
     }
 
     #[test]

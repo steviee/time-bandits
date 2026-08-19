@@ -37,7 +37,10 @@ auth     requisite   pam_timebandits.so
 ```
 
 `tbctl pam enable` writes this block, `tbctl pam disable` removes it, and the
-package uninstall scriptlets remove it too. That last one is not a nicety: a
+package uninstall scriptlets remove it too. `tbctl pam enable --dry-run` shows
+the changes without making them, and every file is backed up alongside itself
+with a `.timebandits-backup` suffix before its first edit — the backup is taken
+once, so it always shows the system as it was before this tool ever touched it. That last one is not a nicety: a
 `required` line pointing at a module that no longer exists makes PAM fail, and
 nobody can log in. Anything that edits these files must use the same markers.
 

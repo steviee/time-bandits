@@ -22,10 +22,10 @@ tested; what is missing is missing entirely, and this table says which is which.
 
 | Component | State |
 |---|---|
-| Domain model — quotas, schedules, decision engine | ✅ complete, 55 tests |
+| Domain model — quotas, schedules, decision engine | ✅ complete, 56 tests |
 | `pam_timebandits.so` — refuses login and unlock | ✅ complete, 26 tests |
 | `timebanditsd` — measures and enforces | ✅ works: tracking, logind locking, PAM socket |
-| `tbctl` — manage policies and PAM setup | ❌ **not started** — see [Known gaps](#known-gaps) |
+| `tbctl` — manage policies and PAM setup | ✅ complete, 65 tests including end-to-end |
 | `timebandits-agent` — focus, idle, notifications | ❌ not started |
 | KWin script, plasmoid | ❌ not started |
 | `timebandits-hub` — server and web app | ❌ not started |
@@ -180,13 +180,27 @@ usermod -aG parents dad
 systemctl enable --now timebanditsd
 
 # 3. Wire up PAM.  READ docs/pam-setup.md FIRST.
+tbctl pam enable --dry-run     # shows exactly what would change
+tbctl pam enable
+
+# 4. Give a child some rules. Until this, nothing is limited.
+tbctl policy set alice --enforcement true --daily 2h --daily sat=3h \
+                       --window 'mon=15:00-19:00' --timezone Europe/Berlin
+
+# 5. Check that it will actually do something.
+tbctl doctor
 ```
 
 **Step 3 is the one that can lock people out.** Read
 [docs/pam-setup.md](docs/pam-setup.md) before touching `/etc/pam.d`, and never
-test it on a machine you are logged into as the only user. The module is
-designed so that `root` and members of `parents` are exempt before any of its
-logic runs, but a misplaced line in a PAM stack is its own kind of problem.
+test it on a machine you are logged into as the only user. `tbctl pam enable`
+backs up every file before its first edit and `tbctl pam disable` restores
+them, but a misplaced line in a PAM stack is its own kind of problem.
+
+`tbctl doctor` exists because a half-configured setup is worse than an
+unconfigured one: it looks like it is working. Every check it makes corresponds
+to a way of being quietly ineffective — a missing lock-screen rule, a policy
+still in observe-only mode, a socket nobody is listening on.
 
 ---
 
@@ -230,8 +244,25 @@ Rules live in the database, one policy per user:
 `unlimited` has to be written out. It never arises from a missing field, so a
 forgotten setting cannot silently grant unrestricted access.
 
-**There is no way to edit policies yet** — `tbctl` does not exist. See
-[Known gaps](#known-gaps).
+Rules are managed with `tbctl`:
+
+```sh
+tbctl policy show alice
+tbctl policy set alice --daily 90m --window 'sat=09:00-12:00'
+tbctl policy set alice --enforcement false        # back to observing only
+tbctl policy export alice --output alice.toml     # review, edit, re-import
+tbctl grant-bonus alice 30m                       # takes effect within seconds
+tbctl status                                      # everyone, at a glance
+tbctl usage alice --week
+```
+
+Changes take effect within one tick. The daemon re-reads the policy and any
+bonus grants on every pass, so a child locked out a moment ago is back in a few
+seconds later without anything being restarted.
+
+`tbctl` needs root, because it reads and writes the daemon's database directly.
+The D-Bus interface that will let a parent do this without `sudo`, gated by
+polkit, comes with the session agent.
 
 ---
 
@@ -271,16 +302,16 @@ The full analysis, including what happens when a child kills the agent or edits
 
 Honest list of what stands between here and something a household can use:
 
-1. **`tbctl` does not exist.** Policies can only be set by writing to the SQLite
-   database directly, and PAM setup is a manual edit. This is the next thing to
-   build; everything else is usable without it, and nothing is usable with it
-   missing.
-2. **No session agent**, so time is recorded but not attributed to
-   applications — everything is booked as `unknown`.
-3. **Lock state comes from logind's `LockedHint`**, which the desktop sets
+1. **No session agent**, so time is recorded but not attributed to
+   applications — everything is booked as `unknown`. This is the next thing to
+   build.
+2. **Lock state comes from logind's `LockedHint`**, which the desktop sets
    voluntarily. A desktop that fails to clear it stops the clock, and the limit
    is never reached. The agent will observe lock state directly.
-4. **No hub, no web app**, so there is no parent-facing interface at all yet.
+3. **`tbctl` needs root.** A parent has to use `sudo`. The polkit-gated D-Bus
+   interface arrives with the agent.
+4. **No hub, no web app**, so there is no parent-facing interface beyond the
+   command line.
 5. **No debug symbols** in the packages; see
    [packaging/README.md](packaging/README.md#debug-information).
 
@@ -344,8 +375,8 @@ Contributions are welcome. Two rules matter more than the rest, and both are in
 | M0 | Workspace, CI, licensing, docs | done |
 | M1 | Tracking: daemon, local database | done |
 | M2 | Enforcement: policy engine, logind, PAM module | done |
-| M3 | `tbctl`: policies, PAM setup, diagnostics | **next** |
-| M4 | Session agent, KWin script, plasmoid | |
+| M3 | `tbctl`: policies, PAM setup, diagnostics | done |
+| M4 | Session agent, KWin script, plasmoid | **next** |
 | M5 | Hub and parents' web app | |
 | M6 | Enrolment, mTLS, offline sync | |
 | M7 | Extra-time requests with push notifications | |
