@@ -106,6 +106,7 @@ fi
 %license LICENSES/GPL-3.0-or-later.txt
 %doc README.md docs/pam-setup.md docs/architecture.md docs/threat-model.md
 %{_bindir}/timebanditsd
+%{_bindir}/tbctl
 %{_libdir}/security/pam_timebandits.so
 %{_unitdir}/timebanditsd.service
 %dir %{_sysconfdir}/timebandits

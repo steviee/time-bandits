@@ -46,6 +46,9 @@ jobs:
             bsdtar -tf "$pkg"
             # The module has to land where PAM actually looks on Arch.
             bsdtar -tf "$pkg" | grep -qx "usr/lib/security/pam_timebandits.so"
+            for f in usr/bin/timebanditsd usr/bin/tbctl; do
+              bsdtar -tf "$pkg" | grep -qx "$f" || { echo "::error::$f missing"; exit 1; }
+            done
           '
 
   rpm:
@@ -66,6 +69,10 @@ jobs:
           rpm -qlp ~/rpmbuild/RPMS/*/time-bandits-*.rpm
           # The module has to land where PAM actually looks on this distribution.
           rpm -qlp ~/rpmbuild/RPMS/*/time-bandits-*.rpm | grep -q '/security/pam_timebandits.so'
+          for f in /usr/bin/timebanditsd /usr/bin/tbctl; do
+            rpm -qlp ~/rpmbuild/RPMS/*/time-bandits-*.rpm | grep -qx "$f" \
+              || { echo "::error::$f missing"; exit 1; }
+          done
 
   deb:
     name: Debian package
@@ -89,3 +96,7 @@ jobs:
           dpkg-buildpackage -us -uc -b
           dpkg-deb -c ../time-bandits_*.deb
           dpkg-deb -c ../time-bandits_*.deb | grep -q 'security/pam_timebandits.so'
+          for f in ./usr/bin/timebanditsd ./usr/bin/tbctl; do
+            dpkg-deb -c ../time-bandits_*.deb | grep -q " $f\$" \
+              || { echo "::error::$f missing"; exit 1; }
+          done

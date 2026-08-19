@@ -19,7 +19,8 @@ use tb_daemon::store::Store;
 use uuid::Uuid;
 
 struct Fixture {
-    _dir: tempfile::TempDir,
+    /// Held for its Drop: the whole fixture lives inside this directory.
+    dir: tempfile::TempDir,
     db: PathBuf,
     pam_root: PathBuf,
 }
@@ -45,11 +46,7 @@ impl Fixture {
         )
         .unwrap();
 
-        Self {
-            _dir: dir,
-            db,
-            pam_root,
-        }
+        Self { dir, db, pam_root }
     }
 
     fn store(&self) -> Store {
@@ -269,7 +266,7 @@ fn a_policy_survives_an_export_import_round_trip() {
     let exported = f.ok(&["policy", "export", "kid"]);
     assert!(exported.contains("subject = \"kid\""), "{exported}");
 
-    let file = f._dir.path().join("kid.toml");
+    let file = f.dir.path().join("kid.toml");
     std::fs::write(&file, &exported).unwrap();
     let out = f.ok(&["policy", "import", "kid", "--input", file.to_str().unwrap()]);
     assert!(out.contains("imported"), "{out}");
@@ -284,7 +281,7 @@ fn importing_one_childs_rules_onto_another_is_refused() {
     let f = Fixture::new();
     setup_kid(&f);
     let exported = f.ok(&["policy", "export", "kid"]);
-    let file = f._dir.path().join("kid.toml");
+    let file = f.dir.path().join("kid.toml");
     std::fs::write(&file, &exported).unwrap();
 
     let err = f.err(&[
