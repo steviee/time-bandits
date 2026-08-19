@@ -126,26 +126,59 @@ cp -r packaging/debian debian && dpkg-buildpackage -us -uc -b
 CI builds all three on every push, because a packaging recipe that is not built
 is a packaging recipe that is broken.
 
+## Package structure
+
+Three packages, and the line between them is drawn by what actually depends on
+a desktop:
+
+```
+  time-bandits ─────────────────┐        time-bandits-hub
+  timebanditsd                  │        timebandits-hub
+  pam_timebandits.so            │        (Raspberry Pi, NAS, container)
+  timebandits-agent             │
+  tbctl                         │        shares only the wire protocol
+    │                           │
+    │ required by               │
+    ▼                           │
+  time-bandits-plasma           │        time-bandits-gnome   (later)
+  KWin focus script             │        Shell extension
+  plasmoid                      │        panel indicator
+```
+
+**`time-bandits`** is the whole enforcing system and depends on no desktop at
+all. logind and PAM are what it stands on, and every systemd desktop has both.
+The session agent lives here too, because most of what it does is portable:
+idle detection is `ext-idle-notify-v1`, a Wayland protocol, and notifications
+go through `org.freedesktop.Notifications`, a freedesktop specification. Its
+dependencies are `pam` and `sqlite` — nothing else.
+
+**`time-bandits-plasma`** is what a KDE household installs, and it pulls the
+core in. It contains the two genuinely KDE-specific pieces: the KWin script
+that reports which window has focus, and the plasmoid.
+
+That single file — the focus reporter — is the entire desktop-specific surface.
+Wayland has no general way for one application to observe another's windows, so
+each compositor needs its own answer: a KWin script here, a GNOME Shell
+extension later. Everything upstream of it, from the app-identity
+normalisation to the reports, is shared.
+
+**`time-bandits-hub`** is the household server. It shares nothing with the
+client beyond the versioned wire protocol and can sit on a different
+architecture and a different release cycle.
+
+### Why not one package
+
+A single package would make the daemon depend on Plasma, which would be a lie:
+the daemon locks GNOME and Sway sessions perfectly well and always could. It
+would also make a GNOME front end a fork rather than an added package, which is
+the difference between someone contributing one and someone not bothering.
+
 ## Not yet packaged
 
-The session agent, the KWin script, the plasmoid and the household server are
-still being built. They will become separate binary packages
-(`time-bandits-plasma`, `time-bandits-hub`).
-
-The split is not about saving disk space. **The enforcing half is not
-KDE-specific at all**: it is built on logind and PAM, which every systemd
-desktop has. The daemon measures session time and locks sessions on GNOME,
-Sway or XFCE exactly as it does on Plasma. Only three pieces are tied to KDE —
-the KWin script that reports which window has focus, the plasmoid, and the
-notification path in the agent.
-
-Keeping those in `time-bandits-plasma` means a GNOME household can install the
-base package today and get quotas, time windows and lockout, losing only the
-per-application breakdown. It also means the equivalent front end for another
-desktop is an added package rather than a fork.
-
-`time-bandits-hub` is the genuinely headless one: it belongs on a Raspberry Pi
-or a NAS and shares nothing with the client beyond the wire protocol.
+Only `time-bandits` exists today; the daemon, the PAM module and the session
+agent are what ship. `time-bandits-plasma` and `time-bandits-hub` are added to
+these recipes as the code for them lands, in the same commit — packaging that
+trails the code is packaging that is quietly broken.
 
 `tbctl` is not shipped yet either, which is why PAM setup is currently a
 documented manual step rather than one command.

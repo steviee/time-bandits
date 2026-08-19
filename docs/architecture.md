@@ -22,6 +22,29 @@ The observation paths run in the child's session and are therefore killable.
 The enforcement paths do not. The daemon treats the first group as *hints* and
 the second as *authority*.
 
+## How much of this is KDE-specific
+
+Almost none of it, which is not how the project started out and is worth being
+explicit about:
+
+| Concern | Mechanism | Portable? |
+|---|---|---|
+| Lock or end a session | `org.freedesktop.login1` | Any systemd desktop |
+| Refuse login and unlock | PAM | Any distribution |
+| Which apps are running | systemd scopes under `app.slice` | Any systemd desktop |
+| Is the user idle | `ext-idle-notify-v1` | Any Wayland compositor supporting it |
+| Warnings to the child | `org.freedesktop.Notifications` | Any desktop |
+| **Which window has focus** | **KWin script** | **KDE only** |
+
+The last row is the whole desktop-specific surface. It is one file, and it
+exists because Wayland deliberately gives clients no way to observe each
+other's windows — so each compositor needs its own answer. Losing it costs the
+per-application breakdown and nothing else: quotas, time windows and lockout
+carry on, with time recorded as `unknown`.
+
+That is also exactly what happens when a child disables the script, which is
+why the same code path serves both cases.
+
 ## Components
 
 ### `timebanditsd` (root, system service)

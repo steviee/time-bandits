@@ -5,7 +5,7 @@
 pkgname=time-bandits
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Screen-time management for KDE Plasma households'
+pkgdesc='Screen-time measurement and enforcement for Linux households'
 arch=('x86_64' 'aarch64')
 url='https://github.com/steviee/time-bandits'
 license=('GPL-3.0-or-later')

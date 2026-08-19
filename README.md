@@ -5,8 +5,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # Time Bandits
 
-Screen-time management for KDE Plasma households — the piece Linux is missing
-next to Windows Family Safety and Google Family Link.
+Screen-time management for Linux households — the piece missing next to Windows
+Family Safety and Google Family Link.
+
+Enforcement stands on systemd-logind and PAM, so quotas, time windows and
+lockout work on **any** systemd desktop. The desktop-specific part is small and
+sits on top: KDE Plasma is the first front end, and it is what adds
+per-application reporting and a panel widget.
 
 > **Status: early development.** The domain model is implemented and tested; the
 > daemon, PAM module, plasmoid and hub are being built out. Not yet usable.
@@ -50,19 +55,31 @@ never depends on it to enforce anything. If the agent is killed or the KWin
 script disabled, time keeps counting, the app is booked as `unknown`, and a
 tamper event is recorded.
 
+## What you install
+
+| Package | Contents | Depends on a desktop? |
+|---|---|---|
+| `time-bandits` | Daemon, PAM module, session agent, `tbctl` | No — logind and PAM only |
+| `time-bandits-plasma` | KWin focus script, plasmoid | KDE Plasma |
+| `time-bandits-hub` | Household server and web app | No — runs headless |
+
+A KDE household installs `time-bandits-plasma`, which pulls the core in. A
+GNOME household can install `time-bandits` today and get quotas and lockout,
+losing only the per-application breakdown until a GTK front end exists.
+
 ## Repository layout
 
-| Path | Contents |
-|---|---|
-| `crates/tb-core` | Domain model: quotas, schedules, decision engine, app identity |
-| `crates/tb-proto` | Wire types shared by daemon, PAM module and hub |
-| `crates/tb-daemon` | `timebanditsd` — the root service that measures and enforces |
-| `crates/tb-agent` | `timebandits-agent` — per-session focus, idle and notifications |
-| `crates/tb-pam` | `pam_timebandits.so` — refuses login and unlock |
-| `crates/tb-hub` | `timebandits-hub` — household server and web app |
-| `crates/tb-cli` | `tbctl` — enrolment, status, policy, PAM setup, diagnostics |
-| `plasmoid/`, `kwin-script/`, `web/` | KDE and browser front ends |
-| `packaging/` | RPM, systemd units, D-Bus and polkit policy, container images |
+| Path | Contents | Package |
+|---|---|---|
+| `crates/tb-core` | Domain model: quotas, schedules, decision engine, app identity | — |
+| `crates/tb-proto` | Wire types shared by daemon, PAM module and hub | — |
+| `crates/tb-daemon` | `timebanditsd` — the root service that measures and enforces | `time-bandits` |
+| `crates/tb-pam` | `pam_timebandits.so` — refuses login and unlock | `time-bandits` |
+| `crates/tb-agent` | `timebandits-agent` — idle and notifications | `time-bandits` |
+| `crates/tb-cli` | `tbctl` — enrolment, status, policy, PAM setup, diagnostics | `time-bandits` |
+| `kwin-script/`, `plasmoid/` | The only KDE-specific code in the project | `time-bandits-plasma` |
+| `crates/tb-hub`, `web/` | Household server and its web app | `time-bandits-hub` |
+| `packaging/` | Recipes for Arch, RPM and Debian; systemd units | — |
 
 ## Building
 

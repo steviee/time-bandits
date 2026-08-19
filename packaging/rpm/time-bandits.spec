@@ -11,7 +11,7 @@
 Name:           time-bandits
 Version:        0.1.0
 Release:        1%{?dist}
-Summary:        Screen-time management for KDE Plasma households
+Summary:        Screen-time measurement and enforcement for Linux households
 
 License:        GPL-3.0-or-later
 URL:            https://github.com/steviee/time-bandits
@@ -43,8 +43,12 @@ daily and weekly limits plus allowed time windows.
 
 Enforcement works at two levels: systemd-logind locks or ends a session when
 time runs out, and a PAM module refuses both the unlock and the next login.
-The PAM half matters because KScreenLocker authenticates through PAM, so
-without it a child could simply unlock again with their own password.
+The PAM half matters because lock screens authenticate through PAM, so without
+it a child could simply unlock again with their own password.
+
+This package depends on no particular desktop; it works wherever logind and PAM
+do. Per-application reporting needs a desktop front end — install
+time-bandits-plasma for KDE Plasma.
 
 It runs standalone on a single machine, or reports to a household server.
 
