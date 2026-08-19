@@ -8,3 +8,8 @@
 *.db
 *.db-wal
 *.db-shm
+# Build artefacts produced by `make dist`
+/vendor/
+/vendor.tar.zst
+/time-bandits-*.tar.gz
+/debian/

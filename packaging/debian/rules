@@ -1,0 +1,32 @@
+#!/usr/bin/make -f
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+include /usr/share/dpkg/architecture.mk
+
+# Debian build hosts have no network, so dependencies come from the vendor
+# directory shipped with the source.
+export CARGO_NET_OFFLINE = true
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) build CARGO_FLAGS="--release --locked --offline"
+
+override_dh_auto_test:
+	cargo test --workspace --locked --offline
+
+override_dh_auto_install:
+	$(MAKE) install \
+	    DESTDIR=$(CURDIR)/debian/time-bandits \
+	    PREFIX=/usr \
+	    SYSCONFDIR=/etc \
+	    UNITDIR=/usr/lib/systemd/system \
+	    PAMDIR=/usr/lib/$(DEB_HOST_MULTIARCH)/security
+
+override_dh_auto_clean:
+	$(MAKE) clean || true
+	rm -rf debian/cargo-home

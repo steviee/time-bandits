@@ -1,0 +1,5 @@
+time-bandits (0.1.0-1) unstable; urgency=medium
+
+  * Initial release: daemon, PAM module and systemd unit.
+
+ -- Stephan Eberle <1726811+steviee@users.noreply.github.com>  Wed, 19 Aug 2026 20:00:00 +0200

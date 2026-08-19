@@ -26,6 +26,21 @@ The module must be listed **before** the module that checks the password, so the
 refusal appears without a pointless password prompt. `requisite` makes the stack
 stop right there.
 
+## Marker format
+
+Lines added to `/etc/pam.d` are wrapped in markers:
+
+```
+# >>> time-bandits >>>
+auth     requisite   pam_timebandits.so
+# <<< time-bandits <<<
+```
+
+`tbctl pam enable` writes this block, `tbctl pam disable` removes it, and the
+package uninstall scriptlets remove it too. That last one is not a nicety: a
+`required` line pointing at a module that no longer exists makes PAM fail, and
+nobody can log in. Anything that edits these files must use the same markers.
+
 ## Options
 
 ```

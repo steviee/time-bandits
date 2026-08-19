@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Time Bandits daemon configuration.
+#
+# Per-user rules (quotas, time windows) are NOT set here — they live in the
+# database and are managed with tbctl or through the household server. This
+# file only covers how the daemon itself runs.
+
+# Where the usage database lives.
+#state_dir = "/var/lib/timebandits"
+
+# Socket the PAM module connects to. Changing this means changing the
+# `socket=` option on the pam_timebandits.so lines as well.
+#pam_socket = "/run/timebandits/pam.sock"
+
+# How often usage is sampled. Shorter is more accurate and slightly busier.
+#tick_interval = "5s"
+
+# Household server. Leave unset for a single machine that manages itself.
+#hub_url = "https://timebandits.local"
+
+# Users in this group are treated as managed even before a policy exists.
+#managed_group = "kids"

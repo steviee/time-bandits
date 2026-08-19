@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+# Lines this package adds to /etc/pam.d are wrapped in markers so they can be
+# removed again without guessing. Keep this format identical to the one tbctl
+# writes, or uninstalling will leave lines behind.
+_TB_BEGIN='# >>> time-bandits >>>'
+_TB_END='# <<< time-bandits <<<'
+
+_tb_remove_pam_lines() {
+    local f
+    for f in /etc/pam.d/*; do
+        [ -f "$f" ] || continue
+        grep -qF "$_TB_BEGIN" "$f" || continue
+        # Delete the marked block. Removing our own lines on uninstall is not
+        # optional: a `required` line pointing at a module that no longer
+        # exists makes PAM fail, and nobody can log in.
+        sed -i "\\|$_TB_BEGIN|,\\|$_TB_END|d" "$f"
+        echo "removed Time Bandits lines from $f"
+    done
+}
+
+post_install() {
+    cat <<'EOF'
+
+Time Bandits is installed but not enforcing anything yet.
+
+  1. systemctl enable --now timebanditsd
+  2. groupadd -f kids; groupadd -f parents
+  3. usermod -aG kids <child>;  usermod -aG parents <parent>
+  4. Set up PAM — see /usr/share/doc/time-bandits/pam-setup.md
+
+Step 4 edits /etc/pam.d and is the step that can lock people out. Read that
+document first, and never test it on a machine you are logged into as the
+only user.
+
+EOF
+}
+
+post_upgrade() {
+    # /etc/pam.d is not managed by pacman, and a pam or sddm update can leave
+    # .pacnew files whose contents drop our lines.
+    if ls /etc/pam.d/*.pacnew >/dev/null 2>&1; then
+        echo "Warning: .pacnew files exist in /etc/pam.d — check that the"
+        echo "Time Bandits lines are still present after you merge them."
+    fi
+}
+
+pre_remove() {
+    systemctl disable --now timebanditsd.service 2>/dev/null || true
+    _tb_remove_pam_lines
+}

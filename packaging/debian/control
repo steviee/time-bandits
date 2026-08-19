@@ -1,0 +1,31 @@
+Source: time-bandits
+Section: admin
+Priority: optional
+Maintainer: Stephan Eberle <1726811+steviee@users.noreply.github.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo (>= 1.90),
+               rustc (>= 1.90),
+               libpam0g-dev,
+               libsqlite3-dev,
+               pkgconf,
+               zstd
+Standards-Version: 4.7.0
+Homepage: https://github.com/steviee/time-bandits
+Rules-Requires-Root: no
+Vcs-Git: https://github.com/steviee/time-bandits.git
+Vcs-Browser: https://github.com/steviee/time-bandits
+
+Package: time-bandits
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}, libpam-runtime
+Recommends: systemd
+Description: screen-time management for KDE Plasma households
+ Time Bandits measures how long children spend at the computer and enforces
+ daily and weekly limits plus allowed time windows.
+ .
+ Enforcement works at two levels: systemd-logind locks or ends a session when
+ time runs out, and a PAM module refuses both the unlock and the next login.
+ The PAM half matters because KScreenLocker authenticates through PAM, so
+ without it a child could simply unlock again with their own password.
+ .
+ It runs standalone on a single machine, or reports to a household server.

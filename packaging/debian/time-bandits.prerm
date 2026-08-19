@@ -1,0 +1,19 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -e
+
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    # Remove our lines from /etc/pam.d while the module still exists. A
+    # `required` line pointing at a missing module makes PAM fail, and then
+    # nobody can log in.
+    for f in /etc/pam.d/*; do
+        [ -f "$f" ] || continue
+        if grep -qF '# >>> time-bandits >>>' "$f"; then
+            sed -i '\|# >>> time-bandits >>>|,\|# <<< time-bandits <<<|d' "$f"
+            echo "removed Time Bandits lines from $f"
+        fi
+    done
+fi
+
+#DEBHELPER#

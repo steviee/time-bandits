@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Maintainer: Stephan Eberle <1726811+steviee@users.noreply.github.com>
+
+pkgname=time-bandits
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Screen-time management for KDE Plasma households'
+arch=('x86_64' 'aarch64')
+url='https://github.com/steviee/time-bandits'
+license=('GPL-3.0-or-later')
+# Verified against `ldd` on the built binaries: the daemon links libsqlite3
+# and the PAM module links libpam. There is deliberately no libsystemd — D-Bus
+# goes through zbus, which is pure Rust. systemd itself is in base and is not
+# listed for that reason.
+depends=('pam' 'sqlite' 'gcc-libs' 'glibc')
+makedepends=('rust' 'cargo' 'make')
+backup=('etc/timebandits/daemon.toml')
+install="${pkgname}.install"
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  # Fetching here lets build() and check() run entirely offline, which is what
+  # makes the build reproducible from Cargo.lock.
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p tb-daemon -p tb-pam
+}
+
+check() {
+  cd "${pkgname}-${pkgver}"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # Deliberately not --release: optimised builds drop integer overflow checks,
+  # so a debug test run catches more.
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "${pkgname}-${pkgver}"
+  # File layout comes from the Makefile, shared with the RPM and Debian
+  # recipes, so a new file cannot land in one package and be missing from
+  # the others.
+  make install \
+    DESTDIR="${pkgdir}" \
+    PREFIX=/usr \
+    PAMDIR=/usr/lib/security \
+    UNITDIR=/usr/lib/systemd/system
+
+  install -Dm0644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm0644 docs/pam-setup.md "${pkgdir}/usr/share/doc/${pkgname}/pam-setup.md"
+  install -Dm0644 docs/threat-model.md "${pkgdir}/usr/share/doc/${pkgname}/threat-model.md"
+  install -Dm0644 LICENSES/GPL-3.0-or-later.txt \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

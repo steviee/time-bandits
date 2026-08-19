@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Packaging
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y libpam0g-dev libsqlite3-dev
+      # The version claimed in Cargo.toml and in the packaging recipes. If this
+      # job fails, either the code moved on or the claim is wrong — both are
+      # bugs, because distributions build against exactly this floor.
+      - run: rustup toolchain install 1.90 --profile minimal
+      - run: cargo +1.90 test --workspace --locked
+
+  arch:
+    name: Arch package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+      - run: pacman -Syu --noconfirm rust git make pam sqlite
+      # makepkg refuses to run as root, which is the whole point of it.
+      - run: |
+          useradd -m builder
+          chown -R builder:builder .
+      - run: |
+          su builder -c '
+            set -eux
+            make dist VERSION=0.1.0
+            mkdir -p /tmp/build
+            cp packaging/arch/PKGBUILD packaging/arch/time-bandits.install /tmp/build/
+            cp time-bandits-0.1.0.tar.gz /tmp/build/
+            cd /tmp/build
+            sed -i "s|^source=.*|source=(\"time-bandits-0.1.0.tar.gz\")|" PKGBUILD
+            makepkg -f --noconfirm --nocheck
+            bsdtar -tf *.pkg.tar.zst
+          '
+
+  rpm:
+    name: RPM package
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          dnf install -y rpm-build rpmdevtools cargo rust gcc make \
+            pam-devel sqlite-devel systemd-rpm-macros zstd git
+      - run: |
+          set -eux
+          make dist VERSION=0.1.0
+          rpmdev-setuptree
+          cp time-bandits-0.1.0.tar.gz vendor.tar.zst ~/rpmbuild/SOURCES/
+          rpmbuild -ba packaging/rpm/time-bandits.spec
+          rpm -qlp ~/rpmbuild/RPMS/*/time-bandits-*.rpm
+          # The module has to land where PAM actually looks on this distribution.
+          rpm -qlp ~/rpmbuild/RPMS/*/time-bandits-*.rpm | grep -q '/security/pam_timebandits.so'
+
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    # Debian stable's rustc predates the edition and let-chains this code uses.
+    container: debian:unstable
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          apt-get -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            build-essential debhelper devscripts cargo rustc \
+            libpam0g-dev libsqlite3-dev pkgconf zstd git ca-certificates
+      - run: |
+          set -eux
+          make vendor
+          tar --zstd -xf vendor.tar.zst
+          mkdir -p .cargo
+          printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "vendor"\n' > .cargo/config.toml
+          cp -r packaging/debian debian
+          dpkg-buildpackage -us -uc -b
+          dpkg-deb -c ../time-bandits_*.deb
+          dpkg-deb -c ../time-bandits_*.deb | grep -q 'security/pam_timebandits.so'
