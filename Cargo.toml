@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/tb-core",
+    "crates/tb-proto",
+    "crates/tb-daemon",
+    "crates/tb-agent",
+    "crates/tb-pam",
+    "crates/tb-hub",
+    "crates/tb-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/stephan/time-bandits"
+homepage = "https://github.com/stephan/time-bandits"
+authors = ["Time Bandits contributors"]
+
+[workspace.dependencies]
+tb-core = { path = "crates/tb-core", version = "0.1.0" }
+tb-proto = { path = "crates/tb-proto", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"

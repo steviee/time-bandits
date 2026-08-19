@@ -1,0 +1,10 @@
+/target/
+**/node_modules/
+/web/dist/
+/web/.svelte-kit/
+*.rpm
+*.raw
+.env
+*.db
+*.db-wal
+*.db-shm

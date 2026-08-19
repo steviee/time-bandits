@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "tb-pam"
+description = "Time Bandits: PAM-Modul zur Anmelde- und Entsperr-Kontrolle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "pam_timebandits"
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]

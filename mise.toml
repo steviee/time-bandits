@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Toolchain für Time Bandits. `mise install` richtet alles ein.
+
+[tools]
+rust  = { version = "1.97", components = "rustfmt,clippy", profile = "default" }
+node  = "24"
+pnpm  = "latest"
+just  = "latest"
+
+# Entwickler-Werkzeuge (vorkompilierte Binaries, kein Build)
+cargo-binstall = "latest"
+
+[env]
+# Workspace-lokale Build-Artefakte, damit nichts ins Home-Verzeichnis leckt
+CARGO_TERM_COLOR = "always"
+RUST_BACKTRACE = "1"
+
+[settings]
+experimental = true
+
+[tasks.setup]
+description = "Einmalige Einrichtung nach dem Klonen"
+run = [
+  "cargo binstall -y cargo-nextest cargo-deny",
+  "pnpm --dir web install",
+]
