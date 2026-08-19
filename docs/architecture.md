@@ -61,6 +61,54 @@ A single binary (or container) that stores policies and usage for the household
 and serves the parents' web app. Clients enrol once with a one-time code and
 authenticate with a device certificate afterwards.
 
+## Enforcement
+
+The tick loop is a state machine, not a set of conditions re-evaluated from
+scratch. Locking is an **edge**, not a level: without that distinction a child
+over their quota would receive a fresh lock request every few seconds for the
+rest of the evening.
+
+```
+Running ──time is up──▶ Grace{since} ──grace expired──▶ Enforced
+   ▲                         │                              │
+   └──── bonus granted, new day, window opened ─────────────┘
+```
+
+`LockAction` decides which edges exist:
+
+| Setting | Behaviour |
+|---|---|
+| `lock` | Lock immediately, stay locked. Never ends the session. |
+| `terminate` | Do **not** lock; wait out the grace period, then end the session. Leaving the screen usable is the entire point — it is what makes saving open work possible. |
+| `lock_then_terminate` | Lock immediately, then end the session after the grace period. |
+
+Logging out resets the escalation, so the next login is handled as its own
+event. While enforced, a session that somehow becomes unlocked is locked again;
+PAM should make that impossible, but the loop does not rely on it.
+
+### What counts as somebody using the computer
+
+`logind` reports more sessions than there are people. On a live Plasma machine:
+
+```
+2  class=user     type=wayland      active=yes  → a person
+3  class=manager  type=unspecified  active=yes  → systemd --user, not a person
+```
+
+Counting the `manager` session would double every minute; locking the display
+manager's `greeter` session would make the machine unusable for the whole
+household. Both are excluded, and a `live_logind_reports_usable_sessions` test
+checks the mapping against the real bus — a mistyped D-Bus property name
+compiles perfectly and fails silently at runtime.
+
+### A known weak point
+
+Whether the screen is locked comes from logind's `LockedHint`, which the desktop
+sets voluntarily. If a desktop fails to clear it, time stops counting and the
+limit is never reached. Until the session agent exists to observe lock state
+directly, this is a dependency worth knowing about rather than one that is
+solved.
+
 ## Time accounting
 
 1. The agent reports focus and idle; the daemon independently resolves the
