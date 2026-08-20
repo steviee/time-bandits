@@ -357,6 +357,7 @@ Honest list of what stands between here and something a household can use:
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | Setting it up in a virtual machine, end to end |
 | [docs/vm-test.md](docs/vm-test.md) | Proving the whole chain on a real system, step by step |
+| [packaging/sysext/README.md](packaging/sysext/README.md) | Bazzite, Kinoite and other image-based systems |
 | [docs/decisions.md](docs/decisions.md) | Settled questions and the reasoning that settled them |
 | [docs/architecture.md](docs/architecture.md) | Why these components exist, what each is authoritative for |
 | [docs/pam-setup.md](docs/pam-setup.md) | PAM integration, safety properties, and how to get back in |

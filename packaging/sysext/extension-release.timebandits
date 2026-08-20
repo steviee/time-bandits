@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Matched against the host os-release. See systemd-sysext(8).
+#
+# ID=_any rather than a pinned distribution and version: an extension that no
+# longer matches is silently refused, which here means the daemon and the PAM
+# module disappear while the rules naming them stay in /etc/pam.d. Nothing is
+# enforced and nothing says so. A rebase should not be able to do that.
+#
+# It is defensible because the binaries link only glibc, libpam and libsqlite3,
+# and glibc runs binaries older than itself. If a soname ever moves, the service
+# fails to start — loudly — which is the better failure of the two.
+ID=_any
+ARCHITECTURE=x86-64
+# We ship a systemd unit, so the manager has to be told the extension arrived.
+EXTENSION_RELOAD_MANAGER=1

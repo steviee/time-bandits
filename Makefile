@@ -181,3 +181,9 @@ clean:
 	$(CARGO) clean
 	rm -rf plasmoid/plugin/build
 	rm -f vendor.tar.zst $(DISTNAME).tar.gz
+
+# --- system extension (image-based systems: Bazzite, Kinoite, bootc) --------
+
+.PHONY: sysext
+sysext:
+	packaging/sysext/build.sh $(CURDIR)/timebandits.raw

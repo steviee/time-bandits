@@ -85,7 +85,7 @@ sudo tests/vm/verify.sh 6 7       # steps 6 and 7
 | 4 | PAM wired up, ordinary logins still work | the login stacks are broken — stop and run `rescue.sh` |
 | 5 | Warning, then the session locks | the enforcement ladder does not fire |
 | 6 | **The correct password is refused at the lock screen** | we are a screensaver, not a limit. This is the step that distinguishes this project from `timekpr` |
-| 7 | Logging in again is refused | a child restarts and carries on |
+| 7 | Logging in again is refused (`plasmalogin` on Plasma 6.5+, `sddm` before) | a child restarts and carries on |
 | 8 | A bonus works within seconds | a parent's decision does not reach the machine |
 | 9 | Killing the agent does not stop the clock | the limit is bypassed by closing a program |
 | 10 | The emergency brake releases everything | there is no way back if we get something wrong |
@@ -115,6 +115,26 @@ Two things that look like faults and are not:
   `idle_threshold` in the policy.
 - **The policy day starts at 04:00, not midnight.** Evening use belongs to the
   day it started on, which is what a household means by "today".
+
+## On Bazzite, Kinoite and other image-based systems
+
+`/usr` is read-only there, so `tests/vm/install.sh` will not work. Use the
+system extension instead:
+
+```sh
+sudo packaging/sysext/build.sh --container   # stages in a Fedora container
+sudo packaging/sysext/install.sh timebandits.raw
+sudo systemd-sysusers                        # the groups; /etc is not in the image
+sudo systemctl enable --now timebanditsd
+sudo tbctl pam enable
+```
+
+`install.sh` schedules its own undo before it merges anything and cancels it
+only once the machine has proved it can still authenticate. See
+[packaging/sysext/README.md](../packaging/sysext/README.md) for why that guard
+exists.
+
+Then carry on with `tests/vm/verify.sh 2` onwards.
 
 ## Afterwards
 
