@@ -95,7 +95,13 @@ async fn serve_sockets(
         .with_context(|| format!("binding {}", cfg.pam_socket.display()))?;
     let pam = tokio::spawn(pamserver::serve(
         pam_listener,
-        pamserver::Responder::new(store.clone()),
+        pamserver::Responder::new(
+            store.clone(),
+            Arc::new(SystemGroups),
+            cfg.managed_group
+                .clone()
+                .unwrap_or_else(|| "kids".to_owned()),
+        ),
     ));
 
     let agent_listener = agentserver::bind(&cfg.agent_socket)

@@ -25,17 +25,28 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::config::Config;
 use crate::store::{EventKind, Store};
+use crate::users::Membership;
 
 /// Shared state the handler needs.
 #[derive(Debug, Clone)]
 pub struct Responder {
     store: Arc<Mutex<Store>>,
+    membership: Arc<dyn Membership + Send + Sync>,
+    managed_group: String,
 }
 
 impl Responder {
     #[must_use]
-    pub fn new(store: Arc<Mutex<Store>>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Arc<Mutex<Store>>,
+        membership: Arc<dyn Membership + Send + Sync>,
+        managed_group: impl Into<String>,
+    ) -> Self {
+        Self {
+            store,
+            membership,
+            managed_group: managed_group.into(),
+        }
     }
 
     /// Decides one query. Pure apart from the database read, so it is tested
@@ -64,6 +75,19 @@ impl Responder {
                 return Answer::ignore();
             }
         };
+
+        // A policy is not permission — the same rule the tick loop applies.
+        // Without this the two halves disagree in the worst possible
+        // direction: a stray policy would leave an adult's session running
+        // while refusing their next login.
+        if self.membership.is_member(&query.user, &self.managed_group) != Some(true) {
+            tracing::warn!(
+                user = %query.user,
+                group = %self.managed_group,
+                "a policy exists but the user is not in the managed group; permitting"
+            );
+            return Answer::ignore();
+        }
 
         let (snapshot, _day) = match store.snapshot(&policy, now) {
             Ok(s) => s,
@@ -214,6 +238,16 @@ async fn handle(stream: UnixStream, responder: &Responder) -> anyhow::Result<()>
 
 #[cfg(test)]
 mod tests {
+    /// A fixed answer to "is this user managed?", so the tests never consult
+    /// the machine's own passwd database.
+    #[derive(Debug)]
+    struct FakeGroups(Option<bool>);
+    impl Membership for FakeGroups {
+        fn is_member(&self, _user: &str, _group: &str) -> Option<bool> {
+            self.0
+        }
+    }
+
     use super::*;
     use jiff::civil;
     use tb_core::duration::DurationSpec;
@@ -261,12 +295,83 @@ mod tests {
                 })
                 .unwrap();
         }
-        Responder::new(Arc::new(Mutex::new(store)))
+        Responder::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(FakeGroups(Some(true))),
+            "kids",
+        )
+    }
+
+    /// The same exhausted state, with a chosen answer to "is this user in the
+    /// managed group?".
+    fn responder_with_group(answer: Option<bool>, from: &Zoned) -> Responder {
+        let store = Store::in_memory().unwrap();
+        store.save_policy(&policy_2h()).unwrap();
+        let start = from.timestamp();
+        store
+            .insert_segment(&UsageSegment {
+                id: Uuid::now_v7(),
+                subject: "kid".to_owned(),
+                app: tb_core::AppId::new("firefox"),
+                source: tb_core::AppIdSource::DesktopFile,
+                start,
+                end: start
+                    .checked_add(jiff::SignedDuration::from_secs(120 * 60))
+                    .unwrap(),
+                title: None,
+            })
+            .unwrap();
+        Responder::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(FakeGroups(answer)),
+            "kids",
+        )
+    }
+
+    #[test]
+    fn a_user_outside_the_managed_group_is_never_refused() {
+        // The two halves of enforcement have to agree. Refusing here while the
+        // tick loop declines to lock is the worst of both: the session keeps
+        // running and the next login fails. Measured against the real module
+        // in a container before it was fixed.
+        let start = at(2026, 8, 19, 15, 0);
+        let r = responder_with_group(Some(false), &start);
+        let a = r.answer(
+            &Query::new("kid", "sddm", Phase::Account),
+            &at(2026, 8, 19, 18, 0),
+        );
+        assert_eq!(a.decision, Decision::Ignore);
+    }
+
+    #[test]
+    fn a_failed_group_lookup_permits() {
+        let start = at(2026, 8, 19, 15, 0);
+        let r = responder_with_group(None, &start);
+        let a = r.answer(
+            &Query::new("kid", "sddm", Phase::Account),
+            &at(2026, 8, 19, 18, 0),
+        );
+        assert_eq!(a.decision, Decision::Ignore);
+    }
+
+    #[test]
+    fn a_managed_user_is_still_refused() {
+        let start = at(2026, 8, 19, 15, 0);
+        let r = responder_with_group(Some(true), &start);
+        let a = r.answer(
+            &Query::new("kid", "sddm", Phase::Account),
+            &at(2026, 8, 19, 18, 0),
+        );
+        assert_eq!(a.decision, Decision::Deny, "enforcement must still work");
     }
 
     #[test]
     fn a_user_without_a_policy_is_not_our_business() {
-        let r = Responder::new(Arc::new(Mutex::new(Store::in_memory().unwrap())));
+        let r = Responder::new(
+            Arc::new(Mutex::new(Store::in_memory().unwrap())),
+            Arc::new(FakeGroups(Some(true))),
+            "kids",
+        );
         let a = r.answer(
             &Query::new("guest", "sddm", Phase::Account),
             &at(2026, 8, 19, 12, 0),
@@ -320,7 +425,7 @@ mod tests {
             })
             .unwrap();
         let shared = Arc::new(Mutex::new(store));
-        let r = Responder::new(shared.clone());
+        let r = Responder::new(shared.clone(), Arc::new(FakeGroups(Some(true))), "kids");
 
         let _ = r.answer(
             &Query::new("kid", "kde", Phase::Auth),
@@ -381,7 +486,11 @@ mod tests {
                 title: None,
             })
             .unwrap();
-        let r = Responder::new(Arc::new(Mutex::new(store)));
+        let r = Responder::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(FakeGroups(Some(true))),
+            "kids",
+        );
 
         // Wednesday the 19th; the week reopens on Monday the 24th.
         let a = r.answer(
@@ -439,7 +548,11 @@ mod tests {
         let listener = bind(&path).unwrap();
         tokio::spawn(serve(
             listener,
-            Responder::new(Arc::new(Mutex::new(Store::in_memory().unwrap()))),
+            Responder::new(
+                Arc::new(Mutex::new(Store::in_memory().unwrap())),
+                Arc::new(FakeGroups(Some(true))),
+                "kids",
+            ),
         ));
 
         let stream = UnixStream::connect(&path).await.unwrap();

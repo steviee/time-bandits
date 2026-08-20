@@ -63,26 +63,43 @@ pub struct ServiceSpec {
     pub why: &'static str,
 }
 
+/// `requisite` semantics, but survivable when the module is not installed.
+///
+/// A plain `requisite pam_timebandits.so` locks **everybody** out the moment
+/// the module goes missing — after removing the package without running
+/// `tbctl pam disable`, or on an image-based system where a system extension
+/// failed to merge. The leading-dash form does not help: it only silences the
+/// log entry, which was measured on Fedora 44 rather than assumed.
+///
+/// `module_unknown=ignore` steps over a module that is not there, while
+/// `default=die` still lets a module that *is* there refuse, and stops the
+/// stack at once so the child sees the reason instead of being asked for a
+/// password that cannot work.
+const AUTH_CONTROL: &str =
+    "[success=ok new_authtok_reqd=ok ignore=ignore module_unknown=ignore default=die]";
+
+/// `required` semantics, with the same protection against a missing module.
+const ACCOUNT_CONTROL: &str =
+    "[success=ok new_authtok_reqd=ok ignore=ignore module_unknown=ignore default=bad]";
+
 /// The services enforcement needs, and why each one.
 pub const MANAGED: &[ServiceSpec] = &[
     ServiceSpec {
         service: "kde",
         stack: Stack::Auth,
-        // `requisite` stops the stack immediately, so the child sees the reason
-        // instead of being asked for a password that cannot work.
-        control: "requisite",
+        control: AUTH_CONTROL,
         why: "the lock screen; KScreenLocker evaluates only the auth stack",
     },
     ServiceSpec {
         service: "sddm",
         stack: Stack::Account,
-        control: "required",
+        control: ACCOUNT_CONTROL,
         why: "the display manager; refuses a fresh session",
     },
     ServiceSpec {
         service: "login",
         stack: Stack::Account,
-        control: "required",
+        control: ACCOUNT_CONTROL,
         why: "text console login",
     },
 ];
@@ -94,7 +111,11 @@ pub fn block(spec: &ServiceSpec) -> String {
         "{BEGIN}\n\
          # Managed by tbctl. Do not edit between the markers; run `tbctl pam disable`.\n\
          # {}\n\
-         {:<8} {:<11} pam_timebandits.so\n\
+         #\n\
+         # The bracket form rather than a plain control word: `module_unknown=ignore`\n\
+         # steps over the module if it is ever not installed, instead of locking\n\
+         # everybody out of the machine.\n\
+         {} {} pam_timebandits.so\n\
          {END}\n",
         spec.why, spec.stack, spec.control
     )
@@ -520,26 +541,62 @@ session     include      system-auth
         assert!(out.contains("pam_timebandits.so"));
     }
 
+    /// The rule line a block writes, with the comments stripped.
+    fn rule_for(service: &str) -> String {
+        let (out, _) = insert_block(KDE_FEDORA, spec(service));
+        out.lines()
+            .find(|l| l.contains("pam_timebandits.so") && !l.trim_start().starts_with('#'))
+            .expect("the rule")
+            .to_owned()
+    }
+
     #[test]
     fn the_written_line_is_the_one_we_intend() {
-        let (out, _) = insert_block(KDE_FEDORA, spec("kde"));
-        let rule = out
-            .lines()
-            .find(|l| l.contains("pam_timebandits.so"))
-            .expect("the rule");
-        let fields: Vec<&str> = rule.split_whitespace().collect();
-        assert_eq!(fields, ["auth", "requisite", "pam_timebandits.so"]);
+        let rule = rule_for("kde");
+        assert!(rule.starts_with("auth "), "{rule}");
+        assert!(rule.ends_with(" pam_timebandits.so"), "{rule}");
+        // `die` rather than `bad`: the lock screen should stop at the refusal
+        // and show it, not go on to ask for a password that cannot work.
+        assert!(rule.contains("default=die"), "{rule}");
     }
 
     #[test]
     fn account_services_get_the_account_stack() {
-        let (out, _) = insert_block(KDE_FEDORA, spec("sddm"));
-        let rule = out
-            .lines()
-            .find(|l| l.contains("pam_timebandits.so"))
-            .unwrap();
-        let fields: Vec<&str> = rule.split_whitespace().collect();
-        assert_eq!(fields, ["account", "required", "pam_timebandits.so"]);
+        let rule = rule_for("sddm");
+        assert!(rule.starts_with("account "), "{rule}");
+        assert!(rule.contains("default=bad"), "{rule}");
+    }
+
+    #[test]
+    fn a_missing_module_can_never_lock_anybody_out() {
+        // Measured on Fedora 44, not assumed: with a plain `requisite` or
+        // `required` control word, deleting the module locks every account out
+        // of the machine, and the leading-dash form does not help — it only
+        // silences the log entry. This is the line that makes an uninstall, or
+        // a system extension that failed to merge, survivable.
+        for service in ["kde", "sddm", "login"] {
+            let rule = rule_for(service);
+            assert!(
+                rule.contains("module_unknown=ignore"),
+                "{service}: a missing module would lock everyone out — {rule}"
+            );
+            let control = rule
+                .split_once('[')
+                .and_then(|(_, r)| r.split_once(']'))
+                .map(|(c, _)| c)
+                .unwrap_or_default();
+            assert!(
+                !control.is_empty(),
+                "{service}: the control must be the bracket form, not a keyword — {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_rule_still_parses_as_its_own_stack() {
+        // `pam disable` and the placement logic both read these lines back.
+        assert_eq!(line_stack(&rule_for("kde")), Some(Stack::Auth));
+        assert_eq!(line_stack(&rule_for("sddm")), Some(Stack::Account));
     }
 
     // --- filesystem behaviour, against a throwaway root --------------------
