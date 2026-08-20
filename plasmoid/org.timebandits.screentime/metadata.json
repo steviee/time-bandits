@@ -1,0 +1,22 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "1726811+steviee@users.noreply.github.com",
+                "Name": "Time Bandits contributors"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "How much screen time is left today, and what it was spent on",
+        "Description[de]": "Wie viel Bildschirmzeit heute noch bleibt, und wofür sie verbraucht wurde",
+        "Icon": "preferences-system-time",
+        "Id": "org.timebandits.screentime",
+        "License": "GPL-3.0-or-later",
+        "Name": "Screen Time",
+        "Name[de]": "Bildschirmzeit",
+        "Version": "0.1.0",
+        "Website": "https://github.com/steviee/time-bandits"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}

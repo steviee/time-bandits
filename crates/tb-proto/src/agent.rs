@@ -114,6 +114,50 @@ impl Default for Report {
     }
 }
 
+/// One application's share of the day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppUsage {
+    /// Normalised identifier, e.g. `org.mozilla.firefox`, or `unknown`.
+    pub id: String,
+    /// What to call it on screen. Falls back to the identifier when no better
+    /// name is known.
+    pub name: String,
+    pub secs: u64,
+}
+
+/// One day of the policy week, as the widget shows it.
+///
+/// With a weekly budget `allowance_secs` is `None` for every day — there is no
+/// per-day allocation, and inventing one would be showing a rule that does not
+/// exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DayOutlook {
+    /// Short weekday name, already in the daemon's own words. The front end
+    /// translates it; two letters is all the strip has room for.
+    pub weekday: String,
+    /// Time allowed on this day, or `None` for unlimited or weekly budgets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowance_secs: Option<u64>,
+    pub used_secs: u64,
+    /// The policy day in progress.
+    #[serde(default)]
+    pub today: bool,
+    /// Still to come this week.
+    #[serde(default)]
+    pub future: bool,
+}
+
+/// Which budget the child is working against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetKind {
+    /// Each day carries its own allowance.
+    #[default]
+    Daily,
+    /// One pot for the week, the child divides it.
+    Weekly,
+}
+
 /// What the daemon tells the agent, so it can warn the child and feed the
 /// plasmoid.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +197,17 @@ pub struct State {
     /// speak up.
     #[serde(default)]
     pub warn_at_secs: Vec<u64>,
+    /// Where today's time went, longest first.
+    #[serde(default)]
+    pub apps: Vec<AppUsage>,
+    /// The policy week, Monday first.
+    #[serde(default)]
+    pub week: Vec<DayOutlook>,
+    #[serde(default)]
+    pub budget_kind: BudgetKind,
+    /// Seconds left in the week, when there is a weekly budget at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_remaining_secs: Option<u64>,
 }
 
 impl State {
@@ -171,6 +226,10 @@ impl State {
             record_titles: false,
             used_today_secs: 0,
             warn_at_secs: Vec::new(),
+            apps: Vec::new(),
+            week: Vec::new(),
+            budget_kind: BudgetKind::Daily,
+            weekly_remaining_secs: None,
         }
     }
 
@@ -281,6 +340,28 @@ mod tests {
         // the caller announces once.
         assert_eq!(state.crossed_thresholds(180), vec![900, 300]);
         assert_eq!(state.crossed_thresholds(0), vec![900, 300, 60]);
+    }
+
+    #[test]
+    fn a_weekly_budget_reports_no_per_day_allowance() {
+        // The distinction the widget depends on: with a weekly pot there is no
+        // daily allocation, so every day says None rather than a made-up share.
+        let state = State {
+            budget_kind: BudgetKind::Weekly,
+            weekly_remaining_secs: Some(12_000),
+            week: vec![DayOutlook {
+                weekday: "monday".into(),
+                allowance_secs: None,
+                used_secs: 3600,
+                today: true,
+                future: false,
+            }],
+            ..State::unmanaged("kid")
+        };
+        let back: State = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(back.budget_kind, BudgetKind::Weekly);
+        assert_eq!(back.week[0].allowance_secs, None);
+        assert_eq!(back.weekly_remaining_secs, Some(12_000));
     }
 
     #[test]

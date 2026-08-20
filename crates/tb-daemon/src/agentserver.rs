@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use jiff::{Timestamp, Zoned};
 use tb_core::duration::DurationSpec;
 use tb_core::engine::Verdict;
+use tb_core::policy::Policy;
 use tb_proto::agent::{MAX_MESSAGE_BYTES, Report, State, VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -181,6 +182,13 @@ impl Receiver {
             ..State::unmanaged(subject)
         };
 
+        let (apps, week, budget_kind, weekly_remaining) =
+            Self::outlook(&store, &policy, now).unwrap_or_default();
+        state.apps = apps;
+        state.week = week;
+        state.budget_kind = budget_kind;
+        state.weekly_remaining_secs = weekly_remaining;
+
         match tb_core::evaluate(&policy, &snapshot, now) {
             Verdict::Allowed(a) => {
                 state.remaining_secs = a.remaining.map(DurationSpec::as_secs);
@@ -199,6 +207,111 @@ impl Receiver {
             }
         }
         state
+    }
+}
+
+type Outlook = (
+    Vec<tb_proto::agent::AppUsage>,
+    Vec<tb_proto::agent::DayOutlook>,
+    tb_proto::agent::BudgetKind,
+    Option<u64>,
+);
+
+impl Receiver {
+    /// What the widget shows besides the countdown: where today went, and what
+    /// the week holds.
+    ///
+    /// Computed here rather than in the agent because it needs the policy and
+    /// the database, and the agent is the untrusted side.
+    fn outlook(store: &Store, policy: &Policy, now: &Zoned) -> anyhow::Result<Outlook> {
+        use tb_core::schedule::{Day, policy_day, policy_day_end};
+        use tb_proto::agent::{AppUsage, BudgetKind, DayOutlook};
+
+        let tz = jiff::tz::TimeZone::get(&policy.timezone).unwrap_or(jiff::tz::TimeZone::UTC);
+        let now = now.with_time_zone(tz.clone());
+        let today = policy_day(&now, policy.day_start);
+
+        // A weekly budget is what a household has set up when the week is
+        // capped and no single day is. Anything else is a per-day arrangement,
+        // including a weekly ceiling on top of daily limits.
+        let every_day_open = Day::ALL
+            .iter()
+            .all(|&d| policy.daily_quota.get(d).limit().is_none());
+        let weekly_limit = policy.weekly_quota.limit();
+        let budget_kind = if every_day_open && weekly_limit.is_some() {
+            BudgetKind::Weekly
+        } else {
+            BudgetKind::Daily
+        };
+
+        // Today's breakdown, longest first. The identifier doubles as the name
+        // until desktop-file lookup exists; showing the id beats showing
+        // nothing, and it is what the child sees in their own report too.
+        let day_end = policy_day_end(today, policy.day_start, &tz);
+        let day_start = day_end
+            .checked_sub(jiff::Span::new().days(1))
+            .unwrap_or_else(|_| day_end.clone());
+        let segments =
+            store.segments_between(&policy.subject, day_start.timestamp(), now.timestamp())?;
+        let apps = tb_core::usage::totals_by_app(&segments)
+            .into_iter()
+            .take(6)
+            .map(|(id, d)| AppUsage {
+                name: id.as_str().to_owned(),
+                id: id.as_str().to_owned(),
+                secs: d.as_secs(),
+            })
+            .collect();
+
+        // The week, Monday first. Days before today carry what was used; days
+        // after carry what is allowed.
+        let monday = today
+            .date
+            .checked_sub(
+                jiff::Span::new().days(i64::from(today.date.weekday().to_monday_zero_offset())),
+            )
+            .unwrap_or(today.date);
+
+        let mut week = Vec::with_capacity(7);
+        for offset in 0..7i64 {
+            let Ok(date) = monday.checked_add(jiff::Span::new().days(offset)) else {
+                continue;
+            };
+            let day = Day::from(date.weekday());
+            let pd = tb_core::PolicyDay { date, day };
+            let end = policy_day_end(pd, policy.day_start, &tz);
+            let start = end
+                .checked_sub(jiff::Span::new().days(1))
+                .unwrap_or_else(|_| end.clone());
+
+            let used = store
+                .usage_between(&policy.subject, start.timestamp(), end.timestamp())?
+                .as_secs();
+
+            week.push(DayOutlook {
+                weekday: day.to_string(),
+                // With a weekly pot there is no per-day allowance to report.
+                allowance_secs: if budget_kind == BudgetKind::Weekly {
+                    None
+                } else {
+                    policy
+                        .daily_quota
+                        .get(day)
+                        .limit()
+                        .map(DurationSpec::as_secs)
+                },
+                used_secs: used,
+                today: date == today.date,
+                future: date > today.date,
+            });
+        }
+
+        let weekly_remaining = weekly_limit.map(|limit| {
+            let used: u64 = week.iter().map(|d| d.used_secs).sum();
+            limit.as_secs().saturating_sub(used)
+        });
+
+        Ok((apps, week, budget_kind, weekly_remaining))
     }
 }
 
@@ -278,7 +391,7 @@ async fn handle(stream: UnixStream, receiver: &Receiver) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use jiff::civil;
-    use tb_core::policy::{Policy, Quota};
+    use tb_core::policy::Quota;
     use tb_core::schedule::WeekSchedule;
     use tb_core::usage::UsageSegment;
     use tb_proto::agent::Focus;
@@ -470,6 +583,94 @@ mod tests {
         p.version = 2;
         let r = receiver_with(&p, 0, &at(2026, 8, 19, 15, 0));
         assert!(r.state_for("kid", &at(2026, 8, 19, 16, 0)).record_titles);
+    }
+
+    #[test]
+    fn the_outlook_reports_a_day_per_weekday_with_today_marked() {
+        let r = receiver_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let state = r.state_for("kid", &at(2026, 8, 19, 16, 0));
+
+        assert_eq!(state.week.len(), 7, "Monday through Sunday");
+        assert_eq!(state.week[0].weekday, "monday", "the week starts on Monday");
+        // 2026-08-19 is a Wednesday.
+        let today: Vec<&tb_proto::agent::DayOutlook> =
+            state.week.iter().filter(|d| d.today).collect();
+        assert_eq!(today.len(), 1);
+        assert_eq!(today[0].weekday, "wednesday");
+        assert!(state.week[3].future, "Thursday is still to come");
+        assert!(!state.week[1].future, "Tuesday is not");
+    }
+
+    #[test]
+    fn a_daily_arrangement_reports_an_allowance_per_day() {
+        let r = receiver_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let state = r.state_for("kid", &at(2026, 8, 19, 16, 0));
+        assert_eq!(state.budget_kind, tb_proto::agent::BudgetKind::Daily);
+        assert!(
+            state.week.iter().all(|d| d.allowance_secs == Some(7200)),
+            "every day carries its own two hours"
+        );
+        assert_eq!(state.weekly_remaining_secs, None, "no weekly pot here");
+    }
+
+    #[test]
+    fn a_weekly_pot_reports_no_per_day_allowance() {
+        // The distinction the widget rests on. Inventing a daily figure would
+        // show the child a rule the policy does not contain.
+        let mut p = policy_2h();
+        p.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(14));
+
+        let r = receiver_with(&p, 120, &at(2026, 8, 19, 15, 0));
+        let state = r.state_for("kid", &at(2026, 8, 19, 18, 0));
+
+        assert_eq!(state.budget_kind, tb_proto::agent::BudgetKind::Weekly);
+        assert!(state.week.iter().all(|d| d.allowance_secs.is_none()));
+        // Fourteen hours less the two recorded.
+        assert_eq!(state.weekly_remaining_secs, Some(12 * 3600));
+    }
+
+    #[test]
+    fn a_weekly_ceiling_on_top_of_daily_limits_is_still_a_daily_arrangement() {
+        // Both quotas set is the middle setting, not a weekly pot: the child
+        // does not get to spend Monday's hour on Saturday.
+        let mut p = policy_2h();
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(10));
+
+        let r = receiver_with(&p, 0, &at(2026, 8, 19, 15, 0));
+        let state = r.state_for("kid", &at(2026, 8, 19, 16, 0));
+        assert_eq!(state.budget_kind, tb_proto::agent::BudgetKind::Daily);
+        assert!(state.week.iter().all(|d| d.allowance_secs == Some(7200)));
+        assert_eq!(state.weekly_remaining_secs, Some(10 * 3600));
+    }
+
+    #[test]
+    fn the_breakdown_names_the_applications_used_today() {
+        let store = Store::in_memory().unwrap();
+        store.save_policy(&policy_2h()).unwrap();
+        let base = at(2026, 8, 19, 15, 0).timestamp();
+        for (app, mins) in [("org.mozilla.firefox", 45i64), ("org.kde.konsole", 15)] {
+            store
+                .insert_segment(&UsageSegment {
+                    id: Uuid::now_v7(),
+                    subject: "kid".to_owned(),
+                    app: tb_core::AppId::new(app),
+                    source: tb_core::AppIdSource::DesktopFile,
+                    start: base,
+                    end: base
+                        .checked_add(jiff::SignedDuration::from_secs(mins * 60))
+                        .unwrap(),
+                    title: None,
+                })
+                .unwrap();
+        }
+        let r = Receiver::new(Arc::new(Mutex::new(store)), AgentReports::new());
+        let state = r.state_for("kid", &at(2026, 8, 19, 17, 0));
+
+        assert_eq!(state.apps.len(), 2);
+        assert_eq!(state.apps[0].id, "org.mozilla.firefox", "longest first");
+        assert_eq!(state.apps[0].secs, 45 * 60);
+        assert_eq!(state.apps[1].id, "org.kde.konsole");
     }
 
     #[allow(unsafe_code)]

@@ -897,6 +897,7 @@ dependencies = [
  "serde_json",
  "tb-core",
  "tb-proto",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -43,6 +43,7 @@ pub struct AgentState {
     announced: BTreeSet<u64>,
     blocked_announced: bool,
     last_remaining: Option<u64>,
+    answered: bool,
 }
 
 impl AgentState {
@@ -55,6 +56,7 @@ impl AgentState {
             announced: BTreeSet::new(),
             blocked_announced: false,
             last_remaining: None,
+            answered: false,
         }
     }
 
@@ -91,6 +93,68 @@ impl AgentState {
         &self.daemon
     }
 
+    /// Today's breakdown as the D-Bus interface hands it over.
+    #[must_use]
+    pub fn apps(&self) -> Vec<(String, String, u32)> {
+        self.daemon
+            .apps
+            .iter()
+            .map(|a| {
+                (
+                    a.id.clone(),
+                    a.name.clone(),
+                    u32::try_from(a.secs).unwrap_or(u32::MAX),
+                )
+            })
+            .collect()
+    }
+
+    /// The week, with `-1` standing in for "no allowance to state" — either
+    /// unlimited or a weekly pot. D-Bus has no optional integer, and conflating
+    /// that with zero would turn "no limit" into "no time".
+    #[must_use]
+    pub fn week(&self) -> Vec<(String, i64, u32, bool)> {
+        self.daemon
+            .week
+            .iter()
+            .map(|d| {
+                (
+                    d.weekday.clone(),
+                    d.allowance_secs
+                        .map_or(-1, |v| i64::try_from(v).unwrap_or(i64::MAX)),
+                    u32::try_from(d.used_secs).unwrap_or(u32::MAX),
+                    d.today,
+                )
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn budget_kind(&self) -> &'static str {
+        match self.daemon.budget_kind {
+            tb_proto::agent::BudgetKind::Daily => "daily",
+            tb_proto::agent::BudgetKind::Weekly => "weekly",
+        }
+    }
+
+    #[must_use]
+    pub fn weekly_remaining_secs(&self) -> i64 {
+        self.daemon
+            .weekly_remaining_secs
+            .map_or(-1, |v| i64::try_from(v).unwrap_or(i64::MAX))
+    }
+
+    /// Whether the daemon has answered at all yet.
+    #[must_use]
+    pub fn has_answer(&self) -> bool {
+        self.answered
+    }
+
+    /// Records that the daemon replied, whatever it said.
+    pub fn mark_answered(&mut self) {
+        self.answered = true;
+    }
+
     /// Takes in the daemon's answer and decides what, if anything, to say.
     pub fn ingest(&mut self, state: State) -> Announcement {
         let was_blocked = self.daemon.blocked;
@@ -108,6 +172,7 @@ impl AgentState {
         }
 
         self.daemon = state;
+        self.answered = true;
 
         if self.daemon.blocked {
             if self.blocked_announced {
@@ -268,6 +333,44 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(s.ingest(State::unmanaged("guest")), Announcement::Nothing);
         }
+    }
+
+    #[test]
+    fn the_week_distinguishes_no_limit_from_no_time() {
+        // D-Bus has no optional integer. -1 means "nothing to state"; 0 means
+        // a day with no computer, and the two must never collapse.
+        let mut s = AgentState::new("kid");
+        s.ingest(State {
+            week: vec![
+                tb_proto::agent::DayOutlook {
+                    weekday: "monday".into(),
+                    allowance_secs: Some(0),
+                    used_secs: 0,
+                    today: false,
+                    future: false,
+                },
+                tb_proto::agent::DayOutlook {
+                    weekday: "tuesday".into(),
+                    allowance_secs: None,
+                    used_secs: 0,
+                    today: true,
+                    future: false,
+                },
+            ],
+            ..managed(Some(3600))
+        });
+        let week = s.week();
+        assert_eq!(week[0].1, 0, "no computer on Monday");
+        assert_eq!(week[1].1, -1, "nothing to state on Tuesday");
+        assert!(week[1].3, "Tuesday is today");
+    }
+
+    #[test]
+    fn an_agent_that_has_not_heard_from_the_daemon_says_so() {
+        let mut s = AgentState::new("kid");
+        assert!(!s.has_answer());
+        s.ingest(State::unmanaged("kid"));
+        assert!(s.has_answer(), "even an unmanaged answer is an answer");
     }
 
     #[test]
