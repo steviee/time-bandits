@@ -34,6 +34,23 @@ someone with physical access to the disk.
 - **Another operating system on the same machine.**
 - **Content filtering.** Time Bandits limits *time*, not what is seen.
 
+## Enforcement needs two independent things
+
+A policy is not permission. The daemon additionally requires the user to be in
+the managed group before it will lock anything, because the two are set by
+different people at different times: a policy can arrive from a hub, be
+restored from a backup, or be created by a mistyped command, while group
+membership is a deliberate act by whoever administers the machine.
+
+This exists because it was needed. A test on a development machine created an
+enforcing policy for the logged-in developer, and twelve stray daemons then
+locked their screen repeatedly. Nobody was harmed — the password still worked —
+but a policy that reaches an adult who was never meant to be managed should not
+be able to lock them out of their own computer, and now it cannot.
+
+A failed group lookup counts as *not managed*. When the question cannot be
+answered, the answer that does not strand a person wins.
+
 ## Fail-safe direction
 
 Every ambiguous case resolves towards the safer outcome for the household, with

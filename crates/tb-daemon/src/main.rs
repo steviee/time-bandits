@@ -30,6 +30,7 @@ use tb_daemon::logind::Logind;
 use tb_daemon::pamserver;
 use tb_daemon::store::Store;
 use tb_daemon::tick::{LogNotifier, Ticker};
+use tb_daemon::users::SystemGroups;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -125,7 +126,7 @@ fn run_ticks(
     reports: &AgentReports,
 ) {
     let interval = Duration::from_secs(cfg.tick_interval.as_secs().max(1));
-    let mut ticker: Option<Ticker<Logind, LogNotifier>> = None;
+    let mut ticker: Option<Ticker<Logind, LogNotifier, SystemGroups>> = None;
 
     while running.load(Ordering::Relaxed) {
         if ticker.is_none() {
@@ -136,6 +137,7 @@ fn run_ticks(
                         store.clone(),
                         logind,
                         LogNotifier,
+                        SystemGroups,
                         reports.clone(),
                         cfg,
                     ));

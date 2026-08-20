@@ -14,3 +14,4 @@ pub mod logind;
 pub mod pamserver;
 pub mod store;
 pub mod tick;
+pub mod users;

@@ -26,6 +26,7 @@ use crate::agentserver::AgentReports;
 use crate::config::Config;
 use crate::logind::{SessionControl, SessionInfo, by_user};
 use crate::store::{EventKind, Store};
+use crate::users::Membership;
 
 /// How the daemon tells a child what is happening.
 ///
@@ -77,6 +78,8 @@ struct UserState {
     /// this the event log would gain a row every few seconds for as long as a
     /// child leaves the agent stopped.
     tamper_reported: bool,
+    /// Whether the "policy without group membership" warning has been said.
+    unmanaged_reported: bool,
 }
 
 impl UserState {
@@ -88,16 +91,20 @@ impl UserState {
             builder: SegmentBuilder::new(subject, cfg),
             last_tick: None,
             tamper_reported: false,
+            unmanaged_reported: false,
         }
     }
 }
 
 /// The enforcement loop.
 #[derive(Debug)]
-pub struct Ticker<S, N> {
+pub struct Ticker<S, N, M> {
     store: Arc<Mutex<Store>>,
     sessions: S,
     notifier: N,
+    membership: M,
+    /// Whose accounts may be enforced against at all.
+    managed_group: String,
     reports: AgentReports,
     states: HashMap<String, UserState>,
     segment_config: SegmentConfig,
@@ -105,12 +112,13 @@ pub struct Ticker<S, N> {
     report_max_age: DurationSpec,
 }
 
-impl<S: SessionControl, N: Notifier> Ticker<S, N> {
+impl<S: SessionControl, N: Notifier, M: Membership> Ticker<S, N, M> {
     #[must_use]
     pub fn new(
         store: Arc<Mutex<Store>>,
         sessions: S,
         notifier: N,
+        membership: M,
         reports: AgentReports,
         cfg: &Config,
     ) -> Self {
@@ -118,6 +126,11 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
             store,
             sessions,
             notifier,
+            membership,
+            managed_group: cfg
+                .managed_group
+                .clone()
+                .unwrap_or_else(|| "kids".to_owned()),
             reports,
             states: HashMap::new(),
             // Three intervals of silence is a stopped agent, not a slow one.
@@ -221,6 +234,30 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
 
         // --- decide ------------------------------------------------------
         if Config::enforcement_disabled() {
+            return Ok(());
+        }
+
+        // A policy is not permission. Enforcement additionally requires the
+        // user to be in the managed group, because the two are set by
+        // different people at different times — a policy can arrive from a
+        // hub, a backup or a mistyped command, while group membership is a
+        // deliberate act by whoever administers this machine.
+        //
+        // A failed lookup is treated as "not managed": refusing to enforce
+        // when the question cannot be answered is the direction that does not
+        // lock somebody out of their own computer.
+        if self.membership.is_member(subject, &self.managed_group) != Some(true) {
+            let state = self.states.get_mut(subject);
+            if let Some(state) = state
+                && !state.unmanaged_reported
+            {
+                state.unmanaged_reported = true;
+                tracing::warn!(
+                    user = subject,
+                    group = %self.managed_group,
+                    "a policy exists but the user is not in the managed group; recording only"
+                );
+            }
             return Ok(());
         }
 
@@ -490,6 +527,19 @@ mod tests {
     use tb_core::usage::UsageSegment;
     use uuid::Uuid;
 
+    /// Group membership, scripted.
+    #[derive(Debug, Clone, Copy)]
+    struct FakeGroups(Option<bool>);
+
+    impl Membership for FakeGroups {
+        fn is_member(&self, _user: &str, _group: &str) -> Option<bool> {
+            self.0
+        }
+    }
+
+    /// The ordinary case: the child is in the managed group.
+    const MANAGED: FakeGroups = FakeGroups(Some(true));
+
     /// Records what the loop asked logind to do.
     #[derive(Debug, Default)]
     struct FakeSessions {
@@ -615,6 +665,7 @@ mod tests {
             store.clone(),
             &sessions,
             &notifier,
+            MANAGED,
             AgentReports::new(),
             &cfg(),
         );
@@ -647,6 +698,7 @@ mod tests {
             store.clone(),
             &sessions,
             &notifier,
+            MANAGED,
             AgentReports::new(),
             &cfg(),
         );
@@ -678,7 +730,14 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         // Twenty ticks over the exhausted quota.
         for i in 0..20 {
@@ -715,7 +774,14 @@ mod tests {
         let store = store_with(&policy_2h(), 110, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         for i in 0..5 {
             ticker
@@ -740,7 +806,14 @@ mod tests {
         let store = store_with(&policy_2h(), 117, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         assert_eq!(notifier.warnings.borrow().len(), 1);
         assert_eq!(notifier.warnings.borrow()[0].1, DurationSpec::from_mins(3));
@@ -755,7 +828,14 @@ mod tests {
         let store = store_with(&p, 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -785,7 +865,14 @@ mod tests {
         let store = store_with(&p, 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -805,6 +892,7 @@ mod tests {
             store.clone(),
             &sessions,
             &notifier,
+            MANAGED,
             AgentReports::new(),
             &cfg(),
         );
@@ -838,7 +926,14 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -858,7 +953,14 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -890,7 +992,14 @@ mod tests {
         greeter.class = "greeter".to_owned();
         let sessions = FakeSessions::with(vec![greeter]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         assert!(
@@ -910,7 +1019,14 @@ mod tests {
         }
         let sessions = FakeSessions::with(vec![desktop("kid"), desktop("sibling")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         // kid is over quota and locked; sibling has used nothing and is not.
@@ -926,13 +1042,16 @@ mod tests {
         notifier: &'a FakeNotifier,
         report: Option<tb_proto::agent::Report>,
         at: &Zoned,
-    ) -> (Ticker<&'a FakeSessions, &'a FakeNotifier>, AgentReports) {
+    ) -> (
+        Ticker<&'a FakeSessions, &'a FakeNotifier, FakeGroups>,
+        AgentReports,
+    ) {
         let reports = AgentReports::new();
         if let Some(r) = report {
             reports.record("kid", r, at.timestamp());
         }
         (
-            Ticker::new(store, sessions, notifier, reports.clone(), &cfg()),
+            Ticker::new(store, sessions, notifier, MANAGED, reports.clone(), &cfg()),
             reports,
         )
     }
@@ -1227,12 +1346,84 @@ mod tests {
     }
 
     #[test]
+    fn a_policy_alone_does_not_authorise_enforcement() {
+        // The safeguard that would have prevented a development machine being
+        // locked by a test: a policy can arrive from a hub, a backup or a
+        // mistyped command, while group membership is a deliberate act by
+        // whoever administers the machine. Both are required.
+        let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let mut ticker = Ticker::new(
+            store.clone(),
+            &sessions,
+            &notifier,
+            FakeGroups(Some(false)),
+            AgentReports::new(),
+            &cfg(),
+        );
+
+        for i in 0..10 {
+            ticker
+                .tick(
+                    &at(2026, 8, 19, 16, 0)
+                        .checked_add(jiff::Span::new().seconds(i * 5))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+        assert!(
+            sessions.locked.borrow().is_empty(),
+            "an unmanaged user must never be locked out of their own computer"
+        );
+
+        // Time is still recorded, so switching the group on later shows a
+        // truthful history rather than starting from nothing.
+        let used = store
+            .lock()
+            .unwrap()
+            .usage_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        assert!(used > DurationSpec::ZERO, "recording continues");
+    }
+
+    #[test]
+    fn a_failed_group_lookup_errs_towards_not_enforcing() {
+        // A broken NSS must not lock anybody out. The question could not be
+        // answered, and the answer that does not strand a person wins.
+        let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            FakeGroups(None),
+            AgentReports::new(),
+            &cfg(),
+        );
+        ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
+        assert!(sessions.locked.borrow().is_empty());
+    }
+
+    #[test]
     fn observe_only_policies_never_lock() {
         let p = Policy::permissive("kid"); // enforcement = false
         let store = store_with(&p, 10_000, &at(2026, 8, 19, 5, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
+        let mut ticker = Ticker::new(
+            store,
+            &sessions,
+            &notifier,
+            MANAGED,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         ticker.tick(&at(2026, 8, 19, 20, 0)).unwrap();
         assert!(sessions.locked.borrow().is_empty());

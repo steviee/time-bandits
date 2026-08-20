@@ -119,6 +119,10 @@ journalctl --user -u timebandits-agent -f        # the agent
 journalctl --user -b -f | grep timebandits-focus # the KWin script
 ```
 
+**Nothing is enforced until the user is in `kids`.** A policy on its own only
+records; the group membership is what authorises locking. If `tbctl doctor`
+looks healthy and nothing ever locks, check `id -nG alice` first.
+
 Three things that look like bugs and are not:
 
 - **No time is counted while the screen is locked.** That is the point, and it
