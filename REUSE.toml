@@ -22,3 +22,21 @@ path = [
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Time Bandits contributors"
 SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# JSON has no comment syntax, and the KDE tooling reads these files strictly.
+[[annotations]]
+path = [
+    "plasmoid/org.timebandits.screentime/metadata.json",
+    "kwin-script/org.timebandits.focus/metadata.json",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Time Bandits contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"
+
+# Translation catalogues are rewritten wholesale by xgettext and msgmerge,
+# which do not preserve a hand-written header.
+[[annotations]]
+path = ["plasmoid/po/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Time Bandits contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

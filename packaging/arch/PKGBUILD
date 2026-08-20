@@ -38,7 +38,10 @@ build() {
   cd "${pkgname}-${pkgver}"
   export RUSTUP_TOOLCHAIN=stable
   export CARGO_TARGET_DIR=target
-  cargo build --frozen --release -p tb-daemon -p tb-pam -p tb-cli
+  # Through the Makefile, for the same reason package() uses it: the list of
+  # crates lives in one place, so a new binary cannot be built here and missing
+  # there. It was, and this package failed to build for eight commits.
+  make build CARGO_FLAGS='--frozen --release'
 }
 
 check() {

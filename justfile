@@ -1,13 +1,15 @@
 # SPDX-FileCopyrightText: 2026 Time Bandits contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Alle Aufgaben laufen über `mise exec` bzw. die von mise bereitgestellten Shims.
+# Every recipe runs through mise's shims.
 
 default:
     @just --list
 
-# Vollständige Prüfung, wie sie auch die CI fährt.
-check: fmt-check lint test
+# Everything CI checks, in the order CI checks it. Run this before pushing —
+# it exists because "the tests pass" is not the same as "the pipeline is green",
+# and licensing drifted red for eight commits while the tests stayed green.
+check: fmt-check lint test licensing
 
 fmt:
     cargo fmt --all
@@ -21,15 +23,36 @@ lint:
 test:
     cargo test --workspace
 
-# Release-Binaries bauen.
-build:
-    cargo build --workspace --release
+# Every file needs a copyright and a licence, including the ones that cannot
+# carry a comment header — those are declared in REUSE.toml.
+licensing:
+    @command -v reuse >/dev/null 2>&1 && reuse lint || python3 -m reuse lint
 
-# PAM-Modul isoliert bauen und die entstandene Bibliothek zeigen.
+# Release binaries, through the Makefile so the crate list stays in one place.
+build:
+    make build
+
+# The three packaging recipes install from the same Makefile. This proves a
+# staged install actually contains every binary, which is what the Arch
+# package silently stopped doing.
+staged-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest=$(mktemp -d)
+    trap 'rm -rf "$dest"' EXIT
+    make build
+    make install DESTDIR="$dest" PREFIX=/usr
+    for f in usr/bin/timebanditsd usr/bin/tbctl usr/bin/timebandits-agent \
+             etc/timebandits/daemon.toml etc/timebandits/policy.d; do
+        test -e "$dest/$f" || { echo "missing: $f"; exit 1; }
+    done
+    echo "staged install is complete"
+
+# Build the PAM module on its own and show what came out.
 pam:
     cargo build -p tb-pam --release
     @ls -lh target/release/libpam_timebandits.so
 
-# Abhängigkeiten und Lizenzen prüfen.
+# Dependency and licence audit.
 audit:
     cargo deny check
