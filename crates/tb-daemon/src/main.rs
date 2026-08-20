@@ -33,6 +33,9 @@ use tb_daemon::tick::{LogNotifier, Ticker};
 use tb_daemon::users::SystemGroups;
 
 fn main() -> anyhow::Result<()> {
+    // Before logging is set up, so `--version` prints one clean line.
+    answer_and_exit_if_asked();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("TIMEBANDITS_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -204,6 +207,38 @@ async fn shutdown_signal() {
 }
 
 /// `--config PATH`, defaulting to the packaged location.
+/// Answers `--version` and `--help` and exits.
+///
+/// A system service has to be able to say what it is without starting: a
+/// packaging check, a support question, or a health probe should not have to
+/// create a state directory and open a database to find out.
+fn answer_and_exit_if_asked() {
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--version" | "-V" => {
+                println!("timebanditsd {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "--help" | "-h" => {
+                println!(
+                    "timebanditsd {} — screen-time enforcement daemon\n\n\
+                     Usage: timebanditsd [--config PATH]\n\n\
+                     Options:\n  \
+                     -c, --config PATH   configuration to read (default {})\n  \
+                     -V, --version       print the version and exit\n  \
+                     -h, --help          print this and exit\n\n\
+                     Rules live in the policy directory the configuration names,\n\
+                     one TOML file per user. Use tbctl to inspect and change them.",
+                    env!("CARGO_PKG_VERSION"),
+                    config::DEFAULT_CONFIG
+                );
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+}
+
 fn parse_config_path() -> PathBuf {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {

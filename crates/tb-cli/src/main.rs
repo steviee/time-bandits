@@ -227,6 +227,11 @@ enum PamCommand {
         /// Operate under this directory instead of /etc/pam.d.
         #[arg(long, default_value = "/etc/pam.d")]
         root: PathBuf,
+        /// Also consider service files a distribution ships in this
+        /// directory. Defaults to /usr/lib/pam.d, but only when --root is the
+        /// real /etc/pam.d.
+        #[arg(long)]
+        vendor_root: Option<PathBuf>,
     },
     /// Remove the module again, restoring the stacks.
     Disable {
@@ -234,11 +239,21 @@ enum PamCommand {
         dry_run: bool,
         #[arg(long, default_value = "/etc/pam.d")]
         root: PathBuf,
+        /// Also consider service files a distribution ships in this
+        /// directory. Defaults to /usr/lib/pam.d, but only when --root is the
+        /// real /etc/pam.d.
+        #[arg(long)]
+        vendor_root: Option<PathBuf>,
     },
     /// Report which services carry the module.
     Status {
         #[arg(long, default_value = "/etc/pam.d")]
         root: PathBuf,
+        /// Also consider service files a distribution ships in this
+        /// directory. Defaults to /usr/lib/pam.d, but only when --root is the
+        /// real /etc/pam.d.
+        #[arg(long)]
+        vendor_root: Option<PathBuf>,
     },
 }
 
@@ -515,10 +530,31 @@ fn grant_bonus(store: &Store, user: &str, amount: &str, now: &Zoned) -> Result<E
     Ok(ExitCode::SUCCESS)
 }
 
+/// A `PamDir` for the given root, with the vendor directory attached only when
+/// that root is the real one.
+///
+/// A distribution can ship a service file in `/usr/lib/pam.d` and nowhere else
+/// — Fedora 44 does exactly that with `plasmalogin` — so the vendor directory
+/// has to be looked at. Pointing a throwaway root at the live vendor directory
+/// would be nonsense, though, so `--root` turns it off unless the caller says
+/// otherwise.
+fn pam_dir(root: &std::path::Path, vendor: Option<&std::path::Path>) -> pamconf::PamDir {
+    let dir = pamconf::PamDir::new(root);
+    match vendor {
+        Some(v) => dir.with_vendor(v),
+        None if root == std::path::Path::new("/etc/pam.d") => dir.with_vendor(pamconf::VENDOR_DIR),
+        None => dir,
+    }
+}
+
 fn pam_command(cmd: &PamCommand) -> Result<ExitCode> {
     match cmd {
-        PamCommand::Enable { dry_run, root } => {
-            let pam = pamconf::PamDir::new(root);
+        PamCommand::Enable {
+            dry_run,
+            root,
+            vendor_root,
+        } => {
+            let pam = pam_dir(root, vendor_root.as_deref());
             if *dry_run {
                 println!("dry run — nothing will be written");
             }
@@ -534,14 +570,18 @@ fn pam_command(cmd: &PamCommand) -> Result<ExitCode> {
                 println!("exempt before any of this takes effect — and run `tbctl pam disable`.");
             }
         }
-        PamCommand::Disable { dry_run, root } => {
-            let pam = pamconf::PamDir::new(root);
+        PamCommand::Disable {
+            dry_run,
+            root,
+            vendor_root,
+        } => {
+            let pam = pam_dir(root, vendor_root.as_deref());
             for change in pam.disable(*dry_run)? {
                 println!("{change}");
             }
         }
-        PamCommand::Status { root } => {
-            let pam = pamconf::PamDir::new(root);
+        PamCommand::Status { root, vendor_root } => {
+            let pam = pam_dir(root, vendor_root.as_deref());
             for (spec, state) in pam.status()? {
                 let mark = match state {
                     pamconf::ServiceState::Configured => "configured",
@@ -583,7 +623,7 @@ fn doctor_command(
     }
 
     let mut env = doctor::Environment {
-        pam: pamconf::PamDir::new(pam_root),
+        pam: pam_dir(pam_root, None),
         database: paths.database.clone(),
         disable_flag: PathBuf::from(tb_daemon::config::DISABLE_FLAG),
         managed_group: paths.managed_group.clone(),

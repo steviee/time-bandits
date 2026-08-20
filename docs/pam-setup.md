@@ -109,3 +109,49 @@ pamtester tb-test testkid acct_mgmt
 The module's own test suite covers the decision table — root, parents,
 unmanaged users, denial, unreachable daemon, garbled answer, and both fallback
 settings — without needing a PAM stack at all.
+
+
+## Which services get a rule, and why the list is longer than it looks
+
+`tbctl pam enable` configures every service below that exists on the machine,
+and skips the rest.
+
+| Service | Stack | What it guards |
+|---|---|---|
+| `kde` | auth | the lock screen; KScreenLocker evaluates only the auth stack |
+| `kcheckpass` | auth | the lock screen's password helper on some builds |
+| `sddm` | account | the display manager, before Plasma 6.5 |
+| `plasmalogin` | account | the display manager, Plasma 6.5 and later |
+| `login` | account | text console login |
+
+Two display managers and two lock-screen services, because which one is live
+has moved between releases. Covering a service nothing uses costs nothing;
+missing the one in use costs everything — on Bazzite 44 there is no `sddm` at
+all, and a tool that only knew about that name configured no login screen
+while reporting success.
+
+### The vendor directory
+
+Fedora keeps some service files in `/usr/lib/pam.d` and not in `/etc/pam.d` —
+`plasmalogin` is one. Files in `/etc/pam.d` override same-named ones there,
+which is also the documented way to customise them, so `tbctl pam enable`
+copies such a file into `/etc/pam.d` before adding its rule. Editing the vendor
+file in place would work until the next package update silently replaced it,
+taking the rule with it.
+
+### If the module ever goes missing
+
+The rules use PAM's bracket form rather than `required` or `requisite`:
+
+```
+auth [success=ok new_authtok_reqd=ok ignore=ignore module_unknown=ignore default=die] pam_timebandits.so
+```
+
+`module_unknown=ignore` steps over the module when it is not installed. With a
+plain control word, deleting `pam_timebandits.so` while its rules are still in
+place locks **every** account out of the machine — measured on Fedora 44, and
+the leading-dash form does not help, it only suppresses the log entry.
+
+That matters after an uninstall that skipped `tbctl pam disable`, and it
+matters routinely on image-based systems, where a system extension can fail to
+merge on any boot.

@@ -97,6 +97,25 @@ pub const MANAGED: &[ServiceSpec] = &[
         why: "the display manager; refuses a fresh session",
     },
     ServiceSpec {
+        service: "plasmalogin",
+        stack: Stack::Account,
+        control: ACCOUNT_CONTROL,
+        // Plasma 6.5 replaced SDDM with this, and Fedora 44 KDE and Bazzite
+        // ship it. A machine covering only `sddm` covers no display manager at
+        // all there: the child is locked out of their session and logs
+        // straight back in.
+        why: "the display manager on Plasma 6.5 and later",
+    },
+    ServiceSpec {
+        service: "kcheckpass",
+        stack: Stack::Auth,
+        control: AUTH_CONTROL,
+        // Present alongside `kde` on Fedora. Which one kscreenlocker consults
+        // has moved between releases, and covering both costs nothing while
+        // missing the live one costs everything.
+        why: "the lock screen's password helper on some builds",
+    },
+    ServiceSpec {
         service: "login",
         stack: Stack::Account,
         control: ACCOUNT_CONTROL,
@@ -186,6 +205,10 @@ pub enum Placement {
     /// The file has no line for this stack at all. Appending is a guess, so the
     /// caller is expected to warn rather than proceed silently.
     AppendedWithNoStackPresent,
+    /// The service only existed in the vendor directory, so `/etc/pam.d` would
+    /// gain a copy of it first. Only reported by a dry run — a real one goes on
+    /// to say where the rule landed in that copy.
+    AdoptedFromVendor,
 }
 
 /// Inserts (or replaces) our block, reporting where it landed.
@@ -255,6 +278,10 @@ impl fmt::Display for Change {
                     "  WARNING  {service}: no matching stack found, appended at the end"
                 ),
                 Some(Placement::BeforeFirstStackLine(_)) => write!(f, "  changed  {service}"),
+                Some(Placement::AdoptedFromVendor) => write!(
+                    f,
+                    "  changed  {service}: would be copied from {VENDOR_DIR} into /etc/pam.d first"
+                ),
                 None => write!(f, "  removed  {service}"),
             },
             Self::NothingToRemove { service } => {
@@ -264,25 +291,82 @@ impl fmt::Display for Change {
     }
 }
 
+/// Where a distribution ships its own copies of the service files.
+///
+/// Fedora 44 keeps `plasmalogin` here and not in `/etc/pam.d` at all. A tool
+/// that only looks in `/etc/pam.d` decides the display manager "is not
+/// installed on this system" and configures nothing — while the machine is
+/// running it. Files in `/etc/pam.d` override same-named ones here, which is
+/// also the documented way to customise them.
+pub const VENDOR_DIR: &str = "/usr/lib/pam.d";
+
 /// Everything under one directory, so tests never touch the real `/etc/pam.d`.
 #[derive(Debug, Clone)]
 pub struct PamDir {
     root: PathBuf,
+    vendor: Option<PathBuf>,
 }
 
 impl Default for PamDir {
     fn default() -> Self {
-        Self::new("/etc/pam.d")
+        Self::new("/etc/pam.d").with_vendor(VENDOR_DIR)
     }
 }
 
 impl PamDir {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            vendor: None,
+        }
+    }
+
+    /// Also consider a vendor directory when a service is not in `/etc/pam.d`.
+    #[must_use]
+    pub fn with_vendor(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.vendor = Some(dir.into());
+        self
     }
 
     fn path(&self, service: &str) -> PathBuf {
         self.root.join(service)
+    }
+
+    fn vendor_path(&self, service: &str) -> Option<PathBuf> {
+        let p = self.vendor.as_ref()?.join(service);
+        p.exists().then_some(p)
+    }
+
+    /// The file to edit, and whether it had to be adopted from the vendor
+    /// directory first.
+    ///
+    /// Copying rather than editing in place: the vendor file belongs to a
+    /// package and would be replaced on the next update, silently taking our
+    /// rule with it.
+    fn resolve(&self, service: &str, dry_run: bool) -> Result<Option<(PathBuf, bool)>> {
+        let path = self.path(service);
+        if path.exists() {
+            return Ok(Some((path, false)));
+        }
+        let Some(vendor) = self.vendor_path(service) else {
+            return Ok(None);
+        };
+        if !dry_run {
+            fs::create_dir_all(&self.root)
+                .with_context(|| format!("creating {}", self.root.display()))?;
+            let body = fs::read_to_string(&vendor)
+                .with_context(|| format!("reading {}", vendor.display()))?;
+            write_atomically(
+                &path,
+                &format!(
+                    "# Copied from {} by tbctl, because a rule added to the vendor file\n\
+                     # would be lost on the next package update. Files here override\n\
+                     # same-named ones there.\n{body}",
+                    vendor.display()
+                ),
+            )?;
+        }
+        Ok(Some((path, true)))
     }
 
     /// The file a service lives in.
@@ -300,10 +384,16 @@ impl PamDir {
     }
 
     fn enable_one(&self, spec: &ServiceSpec, dry_run: bool) -> Result<Change> {
-        let path = self.path(spec.service);
-        if !path.exists() {
+        let Some((path, adopted)) = self.resolve(spec.service, dry_run)? else {
             return Ok(Change::ServiceAbsent {
                 service: spec.service.to_owned(),
+            });
+        };
+        if adopted && dry_run {
+            return Ok(Change::Modified {
+                service: spec.service.to_owned(),
+                path,
+                placement: Some(Placement::AdoptedFromVendor),
             });
         }
         let content =
@@ -363,7 +453,12 @@ impl PamDir {
         MANAGED
             .iter()
             .map(|spec| {
-                let path = self.path(spec.service);
+                let path = if self.path(spec.service).exists() {
+                    self.path(spec.service)
+                } else {
+                    self.vendor_path(spec.service)
+                        .unwrap_or_else(|| self.path(spec.service))
+                };
                 let state = if path.exists() {
                     let content = fs::read_to_string(&path)?;
                     if has_block(&content) {
@@ -692,33 +787,99 @@ session     include      system-auth
         assert!(strays.is_empty(), "left behind: {strays:?}");
     }
 
+    /// The state of one named service, so these tests do not have to be
+    /// rewritten every time the managed list grows.
+    fn state_of(states: &[(&ServiceSpec, ServiceState)], service: &str) -> ServiceState {
+        states
+            .iter()
+            .find(|(s, _)| s.service == service)
+            .map_or_else(|| panic!("`{service}` is not managed"), |(_, st)| *st)
+    }
+
     #[test]
     fn status_reports_each_service_accurately() {
         let (_d, pam) = fixture();
         let before = pam.status().unwrap();
-        assert_eq!(
-            before
-                .iter()
-                .filter(|(_, s)| *s == ServiceState::NotConfigured)
-                .count(),
-            2
-        );
-        assert_eq!(
-            before
-                .iter()
-                .filter(|(_, s)| *s == ServiceState::Absent)
-                .count(),
-            1
-        );
+        assert_eq!(state_of(&before, "kde"), ServiceState::NotConfigured);
+        assert_eq!(state_of(&before, "sddm"), ServiceState::NotConfigured);
+        assert_eq!(state_of(&before, "login"), ServiceState::Absent);
 
         pam.enable(false).unwrap();
         let after = pam.status().unwrap();
+        assert_eq!(state_of(&after, "kde"), ServiceState::Configured);
+        assert_eq!(state_of(&after, "sddm"), ServiceState::Configured);
+        assert_eq!(state_of(&after, "login"), ServiceState::Absent);
+    }
+
+    #[test]
+    fn every_display_manager_we_know_about_is_covered() {
+        // Plasma 6.5 replaced SDDM with plasmalogin, and Fedora 44 KDE and
+        // Bazzite ship it. Covering only sddm there means covering no login
+        // screen at all: the child is locked out of the session and logs
+        // straight back in.
+        let managed: Vec<&str> = MANAGED.iter().map(|s| s.service).collect();
+        for dm in ["sddm", "plasmalogin"] {
+            assert!(managed.contains(&dm), "{dm} is not covered: {managed:?}");
+        }
+        for spec in MANAGED
+            .iter()
+            .filter(|s| s.service != "kde" && s.service != "kcheckpass")
+        {
+            assert_eq!(
+                spec.stack,
+                Stack::Account,
+                "{} guards a login, which is the account stack",
+                spec.service
+            );
+        }
+    }
+
+    #[test]
+    fn a_service_that_only_exists_in_the_vendor_directory_is_adopted() {
+        // Fedora 44 keeps plasmalogin in /usr/lib/pam.d and nowhere else. A
+        // tool that only reads /etc/pam.d calls the running display manager
+        // "not installed" and configures nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("pam.d");
+        let vendor = dir.path().join("vendor-pam.d");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("plasmalogin"), SDDM_DEBIAN).unwrap();
+        let pam = PamDir::new(&root).with_vendor(&vendor);
+
         assert_eq!(
-            after
-                .iter()
-                .filter(|(_, s)| *s == ServiceState::Configured)
-                .count(),
-            2
+            state_of(&pam.status().unwrap(), "plasmalogin"),
+            ServiceState::NotConfigured,
+            "a vendor file is present, not absent"
         );
+
+        pam.enable(false).unwrap();
+        let written = fs::read_to_string(root.join("plasmalogin")).expect("adopted into /etc");
+        assert!(has_block(&written), "{written}");
+        assert!(
+            written.contains("Copied from"),
+            "says where it came from: {written}"
+        );
+        // The vendor file belongs to a package and must be left alone, or the
+        // next update silently takes our rule with it.
+        assert!(!has_block(
+            &fs::read_to_string(vendor.join("plasmalogin")).unwrap()
+        ));
+    }
+
+    #[test]
+    fn a_dry_run_adopts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("pam.d");
+        let vendor = dir.path().join("vendor-pam.d");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&vendor).unwrap();
+        fs::write(vendor.join("plasmalogin"), SDDM_DEBIAN).unwrap();
+
+        PamDir::new(&root)
+            .with_vendor(&vendor)
+            .enable(true)
+            .unwrap();
+        assert!(!root.join("plasmalogin").exists(), "nothing was written");
     }
 }
