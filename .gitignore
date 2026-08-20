@@ -13,3 +13,4 @@
 /vendor.tar.zst
 /time-bandits-*.tar.gz
 /debian/
+/plasmoid/plugin/build/

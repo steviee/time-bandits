@@ -2,14 +2,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import QtQuick
+import QtQuick.Shapes
 import org.kde.kirigami as Kirigami
 
-// The remaining-time ring. A bar implies a finish line you are travelling
-// towards; a ring reads as a budget being spent, which is what this is.
+/// The remaining-time ring.
+///
+/// A bar implies a finish line you are travelling towards; a ring reads as a
+/// budget being spent, which is what this is.
+///
+/// Drawn with Shapes rather than Canvas. Canvas paints imperatively, once, when
+/// something asks it to — and inside a Plasma popup that first paint lands
+/// before the layout has sized anything, leaving no ring and no error to say
+/// why. A declarative arc has no such moment to miss.
 Item {
     id: root
 
-    property real fraction: 0.5          // 0..1 of the allowance still left
+    /// How much of the allowance is still left, 0..1.
+    property real fraction: 0.5
     property color accent: Kirigami.Theme.highlightColor
     property string bigText: ""
     property string unitText: ""
@@ -17,44 +26,45 @@ Item {
     implicitWidth: Kirigami.Units.gridUnit * 8
     implicitHeight: Kirigami.Units.gridUnit * 8
 
-    Canvas {
-        id: canvas
+    readonly property real stroke: Math.max(6, Math.min(width, height) * 0.075)
+    readonly property real radius: Math.min(width, height) / 2 - stroke / 2 - 1
+
+    Shape {
         anchors.fill: parent
-        // Repaint on every input that changes the drawing, or the ring keeps
-        // the previous state's colour after a property change.
-        onPaint: {
-            const ctx = getContext("2d");
-            const w = width, h = height;
-            const cx = w / 2, cy = h / 2;
-            const lw = Math.max(6, w * 0.075);
-            const r = Math.min(cx, cy) - lw / 2 - 1;
+        preferredRendererType: Shape.CurveRenderer
 
-            ctx.reset();
-            ctx.lineWidth = lw;
-            ctx.lineCap = "round";
-
-            ctx.strokeStyle = Qt.rgba(Kirigami.Theme.textColor.r,
-                                      Kirigami.Theme.textColor.g,
-                                      Kirigami.Theme.textColor.b, 0.12);
-            ctx.beginPath();
-            ctx.arc(cx, cy, r, 0, Math.PI * 2);
-            ctx.stroke();
-
-            if (root.fraction > 0) {
-                ctx.strokeStyle = root.accent;
-                ctx.beginPath();
-                ctx.arc(cx, cy, r, -Math.PI / 2,
-                        -Math.PI / 2 + Math.PI * 2 * root.fraction);
-                ctx.stroke();
+        // The track: what the whole allowance would look like.
+        ShapePath {
+            strokeColor: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                                 Kirigami.Theme.textColor.b, 0.12)
+            strokeWidth: root.stroke
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            PathAngleArc {
+                centerX: root.width / 2
+                centerY: root.height / 2
+                radiusX: root.radius
+                radiusY: root.radius
+                startAngle: -90
+                sweepAngle: 360
             }
         }
-        Component.onCompleted: requestPaint()
-    }
 
-    Connections {
-        target: root
-        function onFractionChanged() { canvas.requestPaint(); }
-        function onAccentChanged() { canvas.requestPaint(); }
+        // What is left of it. Starts at twelve o'clock and runs clockwise.
+        ShapePath {
+            strokeColor: root.accent
+            strokeWidth: root.stroke
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            PathAngleArc {
+                centerX: root.width / 2
+                centerY: root.height / 2
+                radiusX: root.radius
+                radiusY: root.radius
+                startAngle: -90
+                sweepAngle: 360 * Math.max(0, Math.min(1, root.fraction))
+            }
+        }
     }
 
     Column {
@@ -66,7 +76,7 @@ Item {
             text: root.bigText
             color: Kirigami.Theme.textColor
             font.family: Kirigami.Theme.defaultFont.family
-            font.pixelSize: Math.round(root.height * 0.19)
+            font.pixelSize: Math.round(root.height * 0.17)
             font.weight: Font.Bold
             font.letterSpacing: -0.5
         }

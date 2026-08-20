@@ -6,39 +6,42 @@ import QtQuick.Layouts
 import org.kde.plasma.components as PlasmaComponents
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.kirigami as Kirigami
+import org.timebandits.screentime.private
 
 /// The popup: how long is left, where it went, and what the week holds.
 ColumnLayout {
     id: root
 
-    required property var state
+    required property var fmt
     property bool showingPrivacy: false
 
     Layout.minimumWidth: Kirigami.Units.gridUnit * 20
-    Layout.minimumHeight: Kirigami.Units.gridUnit * 24
+    Layout.minimumHeight: Kirigami.Units.gridUnit * 26
     spacing: 0
 
-    readonly property color accent: state.blocked ? Kirigami.Theme.negativeTextColor
-        : (state.remainingSecs >= 0 && state.remainingSecs <= 300)
-            ? Kirigami.Theme.neutralTextColor
-            : Kirigami.Theme.highlightColor
+    readonly property bool nearlyUp: ScreenTimeAgent.remainingSeconds >= 0
+                                     && ScreenTimeAgent.remainingSeconds <= 300
+    readonly property color accent: ScreenTimeAgent.blocked
+        ? Kirigami.Theme.negativeTextColor
+        : nearlyUp ? Kirigami.Theme.neutralTextColor
+                   : Kirigami.Theme.highlightColor
 
-    // ── nothing to show ───────────────────────────────────────
     PlasmaExtras.PlaceholderMessage {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: !root.state.available
+        Layout.margins: Kirigami.Units.largeSpacing
+        visible: !ScreenTimeAgent.available
         iconName: "dialog-warning"
         text: i18n("Not connected")
         explanation: i18n("The screen time service is not running on this computer. Ask a parent to check it.")
     }
 
-    // ── the transparency page ─────────────────────────────────
+    // ── what is recorded ──────────────────────────────────────
     ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.margins: Kirigami.Units.largeSpacing
-        visible: root.state.available && root.showingPrivacy
+        visible: ScreenTimeAgent.available && root.showingPrivacy
         spacing: Kirigami.Units.smallSpacing
 
         PlasmaComponents.Label {
@@ -58,8 +61,8 @@ ColumnLayout {
                   s: i18n("The names, not the contents") },
                 { on: true, t: i18n("When you stop using the computer"),
                   s: i18n("So time away doesn't count against you") },
-                { on: root.state.recordTitles, t: i18n("Window titles"),
-                  s: root.state.recordTitles
+                { on: ScreenTimeAgent.recordTitles, t: i18n("Window titles"),
+                  s: ScreenTimeAgent.recordTitles
                      ? i18n("Currently on. Your parents switched this on.")
                      : i18n("Currently off. If your parents switch it on, this line changes.") },
                 { on: false, t: i18n("What you type, browse, or say"),
@@ -107,15 +110,13 @@ ColumnLayout {
     ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
-        visible: root.state.available && !root.showingPrivacy
+        visible: ScreenTimeAgent.available && !root.showingPrivacy
         spacing: 0
 
-        // Blocked or nearly so: say it before anything else.
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: banner.implicitHeight + Kirigami.Units.largeSpacing * 1.6
-            visible: root.state.blocked
-                     || (root.state.remainingSecs >= 0 && root.state.remainingSecs <= 300)
+            visible: ScreenTimeAgent.blocked || root.nearlyUp
             color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.13)
 
             RowLayout {
@@ -125,7 +126,7 @@ ColumnLayout {
                 spacing: Kirigami.Units.largeSpacing
 
                 Kirigami.Icon {
-                    source: root.state.blocked ? "lock" : "clock"
+                    source: ScreenTimeAgent.blocked ? "lock" : "clock"
                     Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
                     Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
                     color: root.accent
@@ -135,19 +136,19 @@ ColumnLayout {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     font.pointSize: Kirigami.Theme.smallFont.pointSize
-                    text: root.state.blocked
-                          ? root.state.message
+                    text: ScreenTimeAgent.blocked
+                          ? ScreenTimeAgent.message
                           : i18n("Time is nearly up. Good moment to save what you're doing.")
                 }
             }
         }
 
-        // Observing only: a parent has switched enforcement off, and pretending
-        // otherwise would be a lie the child could catch.
+        /// Observing only. Pretending otherwise would be a lie the child could
+        /// catch the first time nothing happened at zero.
         PlasmaComponents.Label {
             Layout.fillWidth: true
             Layout.margins: Kirigami.Units.largeSpacing
-            visible: !root.state.enforcement
+            visible: !ScreenTimeAgent.enforcement
             wrapMode: Text.WordWrap
             font.pointSize: Kirigami.Theme.smallFont.pointSize
             color: Kirigami.Theme.disabledTextColor
@@ -158,22 +159,21 @@ ColumnLayout {
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: Kirigami.Units.largeSpacing * 1.5
             accent: root.accent
-            // Blocked draws a closed ring rather than an empty one: an empty
-            // track reads as a broken widget, not as a spent budget.
+            /// A closed ring when blocked, not an empty one: an empty track
+            /// reads as a broken widget rather than a spent budget.
             fraction: {
-                if (root.state.blocked) {
+                if (ScreenTimeAgent.blocked || ScreenTimeAgent.remainingSeconds < 0) {
                     return 1;
                 }
-                if (root.state.remainingSecs < 0) {
-                    return 1;
-                }
-                const total = root.state.remainingSecs + root.state.usedTodaySecs;
-                return total > 0 ? root.state.remainingSecs / total : 0;
+                const total = ScreenTimeAgent.remainingSeconds + ScreenTimeAgent.usedTodaySeconds;
+                return total > 0 ? ScreenTimeAgent.remainingSeconds / total : 0;
             }
-            bigText: root.state.blocked
-                     ? (root.state.retryClock || i18n("later"))
-                     : root.state.longTime(root.state.remainingSecs)
-            unitText: root.state.blocked ? i18n("BACK AT") : i18n("LEFT")
+            /// Blocked shows when time comes back, not a zero. Zero is a dead
+            /// end; a time is something a child can plan around.
+            bigText: ScreenTimeAgent.blocked
+                     ? (ScreenTimeAgent.retryClock || i18n("later"))
+                     : root.fmt.long(ScreenTimeAgent.remainingSeconds)
+            unitText: ScreenTimeAgent.blocked ? i18n("BACK AT") : i18n("LEFT")
         }
 
         PlasmaComponents.Label {
@@ -181,22 +181,22 @@ ColumnLayout {
             Layout.topMargin: Kirigami.Units.smallSpacing
             color: Kirigami.Theme.disabledTextColor
             font.pointSize: Kirigami.Theme.smallFont.pointSize
-            text: i18n("%1 used today", root.state.longTime(root.state.usedTodaySecs))
+            text: i18n("%1 used today", root.fmt.long(ScreenTimeAgent.usedTodaySeconds))
         }
 
         WeekStrip {
             Layout.fillWidth: true
             Layout.margins: Kirigami.Units.largeSpacing
-            state: root.state
-            visible: root.state.week.length > 0
+            fmt: root.fmt
+            visible: ScreenTimeAgent.week.length > 0
         }
 
-        // Where the time went. The child sees the same breakdown a parent does.
+        /// Where the time went. The child sees the same breakdown a parent does.
         ColumnLayout {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.largeSpacing
             Layout.rightMargin: Kirigami.Units.largeSpacing
-            visible: root.state.apps.length > 0
+            visible: ScreenTimeAgent.apps.length > 0
             spacing: Kirigami.Units.smallSpacing
 
             PlasmaComponents.Label {
@@ -207,39 +207,50 @@ ColumnLayout {
                 font.weight: Font.DemiBold
             }
             Repeater {
-                model: root.state.apps.slice(0, 4)
+                model: ScreenTimeAgent.apps.slice(0, 4)
                 delegate: AppRow {
                     required property var modelData
                     Layout.fillWidth: true
-                    appName: modelData.name || modelData.id
-                    duration: root.state.longTime(modelData.secs)
-                    share: root.state.apps[0].secs > 0
-                           ? modelData.secs / root.state.apps[0].secs : 0
+                    appName: modelData.id === "unknown"
+                             ? i18n("Something else") : modelData.name
+                    duration: root.fmt.long(modelData.seconds)
+                    share: ScreenTimeAgent.apps[0].seconds > 0
+                           ? modelData.seconds / ScreenTimeAgent.apps[0].seconds : 0
                     unattributed: modelData.id === "unknown"
                     swatch: modelData.id === "unknown"
                             ? Kirigami.Theme.disabledTextColor
                             : Kirigami.Theme.highlightColor
                 }
             }
+
+            /// Incomplete data is said out loud rather than shown as if whole.
+            PlasmaComponents.Label {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                visible: !ScreenTimeAgent.focusTracking
+                wrapMode: Text.WordWrap
+                color: Kirigami.Theme.disabledTextColor
+                font.pointSize: Kirigami.Theme.smallFont.pointSize * 0.9
+                text: i18n("Some time can't be matched to an app right now.")
+            }
         }
 
         Item { Layout.fillHeight: true }
     }
 
-    // ── footer ────────────────────────────────────────────────
     RowLayout {
         Layout.fillWidth: true
         Layout.margins: Kirigami.Units.smallSpacing
-        visible: root.state.available
+        visible: ScreenTimeAgent.available
         spacing: Kirigami.Units.smallSpacing
 
         PlasmaComponents.Button {
             Layout.fillWidth: true
-            visible: !root.showingPrivacy && root.state.enforcement
+            visible: !root.showingPrivacy && ScreenTimeAgent.enforcement
             text: i18n("Ask for more time")
             icon.name: "appointment-new"
-            // Wired to the agent in the next step; disabled rather than absent
-            // so the popup does not change shape when it starts working.
+            /// Wired to the agent next; shown disabled rather than absent so
+            /// the popup does not change shape when it starts working.
             enabled: false
         }
         PlasmaComponents.Button {

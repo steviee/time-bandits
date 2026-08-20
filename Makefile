@@ -28,15 +28,28 @@ INSTALL     ?= install
 VERSION  ?= 0.1.0
 DISTNAME  = time-bandits-$(VERSION)
 
-.PHONY: all build install install-daemon install-pam install-config install-docs check clean vendor dist
+.PHONY: all build build-plugin install install-daemon install-pam install-config install-docs install-plasma check clean vendor dist
 
 all: build
 
 build:
 	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam -p tb-cli
 
+# The one component CMake builds: Plasma 6 gives QML no way to speak D-Bus, so
+# the widget needs a compiled plugin. Qt only — no KDE Frameworks, no ECM.
+build-plugin:
+	cmake -S plasmoid/plugin -B plasmoid/plugin/build \
+		-DCMAKE_BUILD_TYPE=Release -DQML_INSTALL_DIR=$(QMLDIR)
+	cmake --build plasmoid/plugin/build
+
 check:
 	$(CARGO) test --workspace --locked
+
+# The Plasma front end is a separate package: the enforcing half depends on no
+# desktop, and dragging KDE into it would be a lie. See packaging/README.md.
+PLASMOID_ID  = org.timebandits.screentime
+PLASMOIDDIR ?= $(DATADIR)/plasma/plasmoids
+QMLDIR      ?= $(shell qmake6 -query QT_INSTALL_QML 2>/dev/null || echo $(PREFIX)/lib/qt6/qml)
 
 # Distribution packages usually place documentation themselves (%doc, dh_installdocs),
 # so install-docs is not part of the default set.
@@ -57,6 +70,12 @@ install-pam:
 install-config:
 	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
 		$(DESTDIR)$(SYSCONFDIR)/timebandits/daemon.toml
+
+install-plasma: build-plugin
+	DESTDIR=$(DESTDIR) cmake --install plasmoid/plugin/build
+	$(INSTALL) -d $(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)
+	cp -r plasmoid/$(PLASMOID_ID)/metadata.json plasmoid/$(PLASMOID_ID)/contents \
+		$(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)/
 
 install-docs:
 	$(INSTALL) -Dm0644 README.md $(DESTDIR)$(DATADIR)/doc/time-bandits/README.md
@@ -115,4 +134,5 @@ dist: vendor
 
 clean:
 	$(CARGO) clean
+	rm -rf plasmoid/plugin/build
 	rm -f vendor.tar.zst $(DISTNAME).tar.gz

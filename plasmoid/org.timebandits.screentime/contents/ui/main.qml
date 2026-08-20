@@ -3,33 +3,32 @@
 
 import QtQuick
 import org.kde.plasma.plasmoid
-import org.kde.kirigami as Kirigami
+import org.timebandits.screentime.private
 
 PlasmoidItem {
     id: root
 
-    property ScreenTimeState screenTime: ScreenTimeState { }
+    /// Formatting lives in an object rather than a JavaScript library because
+    /// every string in it goes through i18n(), which a `pragma library` cannot
+    /// reach.
+    readonly property Formatting fmt: Formatting { }
 
-    // Panel first: this is a glanceable counter, not a page to open.
+    /// A glanceable counter, not a page to open.
     preferredRepresentation: compactRepresentation
 
     toolTipMainText: i18n("Screen Time")
-    toolTipSubText: screenTime.available
-                    ? (screenTime.enforcement
-                       ? i18n("%1 left today", screenTime.longTime(screenTime.remainingSecs))
+    toolTipSubText: ScreenTimeAgent.available
+                    ? (ScreenTimeAgent.enforcement
+                       ? i18n("%1 left today", fmt.long(ScreenTimeAgent.remainingSeconds))
                        : i18n("Recording only"))
                     : i18n("Service not running")
 
     compactRepresentation: CompactRepresentation {
-        state: root.screenTime
+        fmt: root.fmt
         onClicked: root.expanded = !root.expanded
     }
 
     fullRepresentation: FullRepresentation {
-        state: root.screenTime
+        fmt: root.fmt
     }
-
-    // The popup is worth a faster refresh than the panel; a counter someone is
-    // looking at should not be twenty seconds stale.
-    onExpandedChanged: screenTime.poll.interval = expanded ? 5000 : 20000
 }
