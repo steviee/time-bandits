@@ -101,7 +101,8 @@ fn seconds_until(denial: &Denial, now: &Zoned) -> Option<u64> {
 /// Deliberately says *when* access returns rather than only that it is refused.
 /// "Try again at 07:00" ends the conversation; "no" invites twenty minutes of
 /// arguing with a computer.
-fn deny_message(denial: &Denial, now: &Zoned) -> String {
+#[must_use]
+pub fn deny_message(denial: &Denial, now: &Zoned) -> String {
     let when = denial.retry_at.as_ref().map(|t| {
         let same_day = t.date() == now.date();
         if same_day {

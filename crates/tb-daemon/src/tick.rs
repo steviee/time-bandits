@@ -16,12 +16,13 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
 use jiff::{Timestamp, Zoned, civil};
-use tb_core::appid::AppObservation;
+use tb_core::appid::{self, AppObservation};
 use tb_core::duration::DurationSpec;
 use tb_core::engine::{DenyReason, Verdict};
 use tb_core::policy::{LockAction, Policy};
 use tb_core::usage::{SegmentBuilder, SegmentConfig, Tick as UsageTick};
 
+use crate::agentserver::AgentReports;
 use crate::config::Config;
 use crate::logind::{SessionControl, SessionInfo, by_user};
 use crate::store::{EventKind, Store};
@@ -70,6 +71,12 @@ struct UserState {
     warned: BTreeSet<u64>,
     warned_on: Option<civil::Date>,
     builder: SegmentBuilder,
+    /// When this user was last ticked, used to clamp a backdated idle start.
+    last_tick: Option<Timestamp>,
+    /// Whether the current lack of tracking has already been recorded. Without
+    /// this the event log would gain a row every few seconds for as long as a
+    /// child leaves the agent stopped.
+    tamper_reported: bool,
 }
 
 impl UserState {
@@ -79,6 +86,8 @@ impl UserState {
             warned: BTreeSet::new(),
             warned_on: None,
             builder: SegmentBuilder::new(subject, cfg),
+            last_tick: None,
+            tamper_reported: false,
         }
     }
 }
@@ -89,18 +98,30 @@ pub struct Ticker<S, N> {
     store: Arc<Mutex<Store>>,
     sessions: S,
     notifier: N,
+    reports: AgentReports,
     states: HashMap<String, UserState>,
     segment_config: SegmentConfig,
+    /// How old an agent report may be and still describe the present.
+    report_max_age: DurationSpec,
 }
 
 impl<S: SessionControl, N: Notifier> Ticker<S, N> {
     #[must_use]
-    pub fn new(store: Arc<Mutex<Store>>, sessions: S, notifier: N, cfg: &Config) -> Self {
+    pub fn new(
+        store: Arc<Mutex<Store>>,
+        sessions: S,
+        notifier: N,
+        reports: AgentReports,
+        cfg: &Config,
+    ) -> Self {
         Self {
             store,
             sessions,
             notifier,
+            reports,
             states: HashMap::new(),
+            // Three intervals of silence is a stopped agent, not a slow one.
+            report_max_age: DurationSpec::from_secs(cfg.tick_interval.as_secs() * 3),
             segment_config: SegmentConfig {
                 tick_interval: cfg.tick_interval,
                 // A gap of more than a few ticks means the machine was asleep or
@@ -141,43 +162,41 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
         now: &Zoned,
     ) -> anyhow::Result<()> {
         let policy = {
-            let store = self
-                .store
-                .lock()
-                .map_err(|_| anyhow::anyhow!("store lock poisoned"))?;
+            let store = self.lock_store()?;
             match store.load_policy(subject)? {
                 Some(p) => p,
                 None => return Ok(()),
             }
         };
 
-        let seg_cfg = self.segment_config;
-        let state = self
-            .states
-            .entry(subject.to_owned())
-            .or_insert_with(|| UserState::new(subject, seg_cfg));
-
-        // --- record what is happening -----------------------------------
+        // logind decides whether anybody is at the machine. The agent only
+        // refines *what* they are doing, and cannot make time count that logind
+        // says is not being spent.
         let at_work = sessions.iter().any(SessionInfo::is_creditable_desktop);
-        let tick = if at_work {
-            UsageTick::Active {
-                at: now.timestamp(),
-                // Which application has focus can only come from the session
-                // agent. Until it reports, time is real but unattributed —
-                // recorded as `unknown` rather than quietly dropped.
-                app: AppObservation::unknown(),
-                title: None,
-            }
-        } else {
-            UsageTick::Idle {
-                at: now.timestamp(),
-            }
+        let now_ts = now.timestamp();
+        let report = self.reports.fresh(subject, now_ts, self.report_max_age);
+        let tracking_blind = at_work && report.as_ref().is_none_or(|r| !r.focus_tracking);
+
+        let seg_cfg = self.segment_config;
+        let (closed, announce_tamper) = {
+            let state = self
+                .states
+                .entry(subject.to_owned())
+                .or_insert_with(|| UserState::new(subject, seg_cfg));
+
+            let tick = build_tick(state, &policy, at_work, now_ts, report.as_ref());
+            state.last_tick = Some(now_ts);
+
+            // Reported once per transition. Logging every tick would add a row
+            // every few seconds for as long as a child leaves the agent stopped.
+            let announce = tracking_blind && !state.tamper_reported;
+            state.tamper_reported = tracking_blind;
+
+            (state.builder.observe(&tick), announce)
         };
-        if let Some(closed) = state.builder.observe(&tick) {
-            let store = self
-                .store
-                .lock()
-                .map_err(|_| anyhow::anyhow!("store lock poisoned"))?;
+
+        if let Some(closed) = closed {
+            let store = self.lock_store()?;
             store.insert_segment(&closed.segment)?;
             tracing::debug!(
                 user = subject,
@@ -188,32 +207,83 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
             );
         }
 
+        if announce_tamper {
+            let detail = if report.is_none() {
+                "session agent is not reporting"
+            } else {
+                "agent is running but the compositor script is not reporting focus"
+            };
+            tracing::warn!(user = subject, detail, "tracking is blind");
+            if let Ok(store) = self.store.lock() {
+                let _ = store.record_event(subject, EventKind::Tamper, Some(detail));
+            }
+        }
+
         // --- decide ------------------------------------------------------
         if Config::enforcement_disabled() {
             return Ok(());
         }
-        let (snapshot, day) = {
-            let store = self
-                .store
-                .lock()
-                .map_err(|_| anyhow::anyhow!("store lock poisoned"))?;
-            store.snapshot(&policy, now)?
-        };
 
-        // Warning thresholds are per policy day, so a new day starts quiet.
-        if state.warned_on != Some(day.date) {
-            state.warned.clear();
-            state.warned_on = Some(day.date);
+        // A household that has chosen it can treat blind tracking as reason
+        // enough to stop the session, rather than accepting unattributed time.
+        if tracking_blind && policy.on_tamper == tb_core::TamperResponse::LockImmediately {
+            return self.enforce(
+                subject,
+                sessions,
+                &policy,
+                DenyReason::DailyQuotaExhausted,
+                now,
+            );
         }
 
-        match tb_core::evaluate(&policy, &snapshot, now) {
+        let (snapshot, day) = {
+            let store = self.lock_store()?;
+            store.snapshot(&policy, now)?
+        };
+        self.apply_verdict(
+            subject,
+            sessions,
+            &Situation {
+                policy: &policy,
+                snapshot: &snapshot,
+                day,
+                at_work,
+            },
+            now,
+        )
+    }
+
+    /// Acts on the engine's verdict: warn, restore, or enforce.
+    fn apply_verdict(
+        &mut self,
+        subject: &str,
+        sessions: &[SessionInfo],
+        situation: &Situation<'_>,
+        now: &Zoned,
+    ) -> anyhow::Result<()> {
+        let Situation {
+            policy,
+            snapshot,
+            day,
+            at_work,
+        } = *situation;
+        match tb_core::evaluate(policy, snapshot, now) {
             Verdict::Allowed(allowance) => {
+                let Some(state) = self.states.get_mut(subject) else {
+                    return Ok(());
+                };
+                // Warning thresholds are per policy day, so a new day starts quiet.
+                if state.warned_on != Some(day.date) {
+                    state.warned.clear();
+                    state.warned_on = Some(day.date);
+                }
                 if state.phase != Phase::Running {
                     // Access came back: a parent granted bonus time, a new day
                     // began, or an allowed window opened.
                     tracing::info!(user = subject, "access restored");
                     state.phase = Phase::Running;
                 }
+
                 if let Some(remaining) = allowance.remaining
                     && at_work
                 {
@@ -230,12 +300,16 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
                         self.notifier.warn(subject, remaining);
                     }
                 }
+                Ok(())
             }
-            Verdict::Denied(denial) => {
-                self.enforce(subject, sessions, &policy, denial.reason, now)?;
-            }
+            Verdict::Denied(denial) => self.enforce(subject, sessions, policy, denial.reason, now),
         }
-        Ok(())
+    }
+
+    fn lock_store(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Store>> {
+        self.store
+            .lock()
+            .map_err(|_| anyhow::anyhow!("store lock poisoned"))
     }
 
     fn enforce(
@@ -338,6 +412,62 @@ impl<S: SessionControl, N: Notifier> Ticker<S, N> {
                 tracing::error!(user = %subject, error = %e, "could not save final segment");
             }
         }
+    }
+}
+
+/// Everything the verdict depends on, bundled so the call does not need eight
+/// positional arguments.
+#[derive(Debug, Clone, Copy)]
+struct Situation<'a> {
+    policy: &'a Policy,
+    snapshot: &'a tb_core::engine::UsageSnapshot,
+    day: tb_core::PolicyDay,
+    at_work: bool,
+}
+
+/// What this tick represents, given what logind and the agent each say.
+fn build_tick(
+    state: &UserState,
+    policy: &Policy,
+    at_work: bool,
+    now_ts: Timestamp,
+    report: Option<&tb_proto::agent::Report>,
+) -> UsageTick {
+    if !at_work {
+        return UsageTick::Idle { at: now_ts };
+    }
+    match report {
+        Some(r) if r.idle_secs >= policy.idle_threshold.as_secs() => {
+            // Crediting stops when the inactivity began, not when it was
+            // noticed — otherwise the idle threshold itself is charged to the
+            // child every time they walk away. Clamped to the previous tick so
+            // a backdated instant cannot look like a clock running backwards.
+            let began = now_ts
+                .checked_sub(jiff::SignedDuration::from_secs(
+                    i64::try_from(r.idle_secs).unwrap_or(0),
+                ))
+                .unwrap_or(now_ts);
+            let at = state.last_tick.map_or(began, |last| began.max(last));
+            UsageTick::Idle { at }
+        }
+        Some(r) => UsageTick::Active {
+            at: now_ts,
+            app: r.focus.as_ref().map_or_else(AppObservation::unknown, |f| {
+                appid::observe_window(f.desktop_file.as_deref(), f.resource_class.as_deref())
+            }),
+            title: if policy.record_window_titles {
+                r.focus.as_ref().and_then(|f| f.title.clone())
+            } else {
+                None
+            },
+        },
+        // No agent: the time is real, so it counts. What is lost is knowing
+        // which application it belongs to.
+        None => UsageTick::Active {
+            at: now_ts,
+            app: AppObservation::unknown(),
+            title: None,
+        },
     }
 }
 
@@ -481,7 +611,13 @@ mod tests {
         let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store.clone(), &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(
+            store.clone(),
+            &sessions,
+            &notifier,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 15, 0);
         for i in 0..4 {
@@ -507,7 +643,13 @@ mod tests {
         let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
         let sessions = FakeSessions::default();
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store.clone(), &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(
+            store.clone(),
+            &sessions,
+            &notifier,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         for i in 0..10 {
             ticker
@@ -536,7 +678,7 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         // Twenty ticks over the exhausted quota.
         for i in 0..20 {
@@ -573,7 +715,7 @@ mod tests {
         let store = store_with(&policy_2h(), 110, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         for i in 0..5 {
             ticker
@@ -598,7 +740,7 @@ mod tests {
         let store = store_with(&policy_2h(), 117, &start);
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         assert_eq!(notifier.warnings.borrow().len(), 1);
         assert_eq!(notifier.warnings.borrow()[0].1, DurationSpec::from_mins(3));
@@ -613,7 +755,7 @@ mod tests {
         let store = store_with(&p, 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -643,7 +785,7 @@ mod tests {
         let store = store_with(&p, 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -659,7 +801,13 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store.clone(), &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(
+            store.clone(),
+            &sessions,
+            &notifier,
+            AgentReports::new(),
+            &cfg(),
+        );
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -690,7 +838,7 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -710,7 +858,7 @@ mod tests {
         let store = store_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         let base = at(2026, 8, 19, 16, 0);
         ticker.tick(&base).unwrap();
@@ -742,7 +890,7 @@ mod tests {
         greeter.class = "greeter".to_owned();
         let sessions = FakeSessions::with(vec![greeter]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         assert!(
@@ -762,11 +910,320 @@ mod tests {
         }
         let sessions = FakeSessions::with(vec![desktop("kid"), desktop("sibling")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         ticker.tick(&at(2026, 8, 19, 16, 0)).unwrap();
         // kid is over quota and locked; sibling has used nothing and is not.
         assert_eq!(sessions.locked.borrow().as_slice(), ["kid-1"]);
+    }
+
+    // --- what the agent contributes ---------------------------------------
+
+    /// A ticker whose agent reports whatever `report` says.
+    fn ticker_with_report<'a>(
+        store: Arc<Mutex<Store>>,
+        sessions: &'a FakeSessions,
+        notifier: &'a FakeNotifier,
+        report: Option<tb_proto::agent::Report>,
+        at: &Zoned,
+    ) -> (Ticker<&'a FakeSessions, &'a FakeNotifier>, AgentReports) {
+        let reports = AgentReports::new();
+        if let Some(r) = report {
+            reports.record("kid", r, at.timestamp());
+        }
+        (
+            Ticker::new(store, sessions, notifier, reports.clone(), &cfg()),
+            reports,
+        )
+    }
+
+    fn focused(app: &str) -> tb_proto::agent::Report {
+        tb_proto::agent::Report {
+            focus_tracking: true,
+            focus: Some(tb_proto::agent::Focus {
+                desktop_file: Some(app.to_owned()),
+                resource_class: None,
+                title: Some("a window title".to_owned()),
+            }),
+            ..tb_proto::agent::Report::new()
+        }
+    }
+
+    #[test]
+    fn focus_from_the_agent_is_attributed_to_the_application() {
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, reports) = ticker_with_report(
+            store.clone(),
+            &sessions,
+            &notifier,
+            Some(focused("org.mozilla.firefox")),
+            &base,
+        );
+
+        for i in 0..3 {
+            let now = base.checked_add(jiff::Span::new().seconds(i * 5)).unwrap();
+            reports.record("kid", focused("org.mozilla.firefox"), now.timestamp());
+            ticker.tick(&now).unwrap();
+        }
+        ticker.flush(&base.checked_add(jiff::Span::new().seconds(15)).unwrap());
+
+        let segments = store
+            .lock()
+            .unwrap()
+            .segments_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        assert!(!segments.is_empty());
+        assert!(
+            segments
+                .iter()
+                .all(|s| s.app.as_str() == "org.mozilla.firefox"),
+            "got {:?}",
+            segments
+                .iter()
+                .map(|s| s.app.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn window_titles_are_only_stored_when_the_policy_allows_it() {
+        for (record, expected) in [(false, None), (true, Some("a window title".to_owned()))] {
+            let mut p = policy_2h();
+            p.record_window_titles = record;
+            let store = store_with(&p, 0, &at(2026, 8, 19, 15, 0));
+            let sessions = FakeSessions::with(vec![desktop("kid")]);
+            let notifier = FakeNotifier::default();
+            let base = at(2026, 8, 19, 15, 0);
+            let (mut ticker, _) = ticker_with_report(
+                store.clone(),
+                &sessions,
+                &notifier,
+                Some(focused("firefox")),
+                &base,
+            );
+            ticker.tick(&base).unwrap();
+            ticker.flush(&base.checked_add(jiff::Span::new().seconds(10)).unwrap());
+
+            let segments = store
+                .lock()
+                .unwrap()
+                .segments_between(
+                    "kid",
+                    at(2026, 8, 19, 0, 0).timestamp(),
+                    at(2026, 8, 20, 0, 0).timestamp(),
+                )
+                .unwrap();
+            assert_eq!(
+                segments[0].title, expected,
+                "record_window_titles = {record}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_idle_report_stops_the_clock_at_the_moment_idleness_began() {
+        // Charging the idle threshold itself would cost the child two minutes
+        // every time they walk away from the machine.
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, reports) =
+            ticker_with_report(store.clone(), &sessions, &notifier, None, &base);
+
+        // Two active ticks, then a report saying idle began 120 s ago.
+        for i in 0..2 {
+            let now = base.checked_add(jiff::Span::new().seconds(i * 5)).unwrap();
+            reports.record("kid", focused("firefox"), now.timestamp());
+            ticker.tick(&now).unwrap();
+        }
+        let idle_at = base.checked_add(jiff::Span::new().seconds(10)).unwrap();
+        reports.record(
+            "kid",
+            tb_proto::agent::Report {
+                idle_secs: 120,
+                focus_tracking: true,
+                ..tb_proto::agent::Report::new()
+            },
+            idle_at.timestamp(),
+        );
+        ticker.tick(&idle_at).unwrap();
+
+        let used = store
+            .lock()
+            .unwrap()
+            .usage_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        // Clamped to the last tick, so the segment ends at 5 s rather than
+        // being backdated to before it began.
+        assert_eq!(used, DurationSpec::from_secs(5), "got {used}");
+    }
+
+    #[test]
+    fn without_an_agent_time_still_counts_but_as_unknown() {
+        // Killing the agent must cost attribution, never enforcement.
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, _) = ticker_with_report(store.clone(), &sessions, &notifier, None, &base);
+
+        for i in 0..3 {
+            ticker
+                .tick(&base.checked_add(jiff::Span::new().seconds(i * 5)).unwrap())
+                .unwrap();
+        }
+        ticker.flush(&base.checked_add(jiff::Span::new().seconds(15)).unwrap());
+
+        let store = store.lock().unwrap();
+        let used = store
+            .usage_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        assert_eq!(used, DurationSpec::from_secs(15));
+        let segments = store
+            .segments_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        assert!(segments.iter().all(|s| s.app.is_unknown()));
+        assert!(store.event_count("kid", EventKind::Tamper).unwrap() >= 1);
+    }
+
+    #[test]
+    fn a_blind_agent_is_reported_once_not_every_tick() {
+        // Otherwise a child who disables the KWin script fills the event log
+        // with a row every few seconds all evening.
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, reports) =
+            ticker_with_report(store.clone(), &sessions, &notifier, None, &base);
+
+        // Agent alive, but the compositor script is not reporting focus.
+        for i in 0..10 {
+            let now = base.checked_add(jiff::Span::new().seconds(i * 5)).unwrap();
+            reports.record(
+                "kid",
+                tb_proto::agent::Report {
+                    focus_tracking: false,
+                    ..tb_proto::agent::Report::new()
+                },
+                now.timestamp(),
+            );
+            ticker.tick(&now).unwrap();
+        }
+
+        let count = store
+            .lock()
+            .unwrap()
+            .event_count("kid", EventKind::Tamper)
+            .unwrap();
+        assert_eq!(count, 1, "one event for one episode, not one per tick");
+    }
+
+    #[test]
+    fn tracking_recovers_and_a_second_episode_is_reported_again() {
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, reports) =
+            ticker_with_report(store.clone(), &sessions, &notifier, None, &base);
+
+        let blind = tb_proto::agent::Report::new();
+        for (i, report) in [blind.clone(), focused("firefox"), blind]
+            .into_iter()
+            .enumerate()
+        {
+            let now = base
+                .checked_add(jiff::Span::new().seconds(i as i64 * 5))
+                .unwrap();
+            reports.record("kid", report, now.timestamp());
+            ticker.tick(&now).unwrap();
+        }
+
+        let count = store
+            .lock()
+            .unwrap()
+            .event_count("kid", EventKind::Tamper)
+            .unwrap();
+        assert_eq!(count, 2, "two separate episodes");
+    }
+
+    #[test]
+    fn strict_households_can_lock_when_tracking_goes_blind() {
+        let mut p = policy_2h();
+        p.on_tamper = tb_core::TamperResponse::LockImmediately;
+        let store = store_with(&p, 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, _) = ticker_with_report(store, &sessions, &notifier, None, &base);
+
+        ticker.tick(&base).unwrap();
+        assert_eq!(sessions.locked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn the_default_response_to_blind_tracking_is_to_keep_going() {
+        // CountAndReport is the default for a reason: a flaky agent must not
+        // lock a child out of a machine they are entitled to use.
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        let (mut ticker, _) = ticker_with_report(store, &sessions, &notifier, None, &base);
+
+        ticker.tick(&base).unwrap();
+        assert!(sessions.locked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_stale_report_is_treated_as_no_agent_at_all() {
+        let store = store_with(&policy_2h(), 0, &at(2026, 8, 19, 15, 0));
+        let sessions = FakeSessions::with(vec![desktop("kid")]);
+        let notifier = FakeNotifier::default();
+        let base = at(2026, 8, 19, 15, 0);
+        // Recorded a full minute before the tick; the window is three intervals.
+        let (mut ticker, _) = ticker_with_report(
+            store.clone(),
+            &sessions,
+            &notifier,
+            Some(focused("firefox")),
+            &base.checked_sub(jiff::Span::new().minutes(1)).unwrap(),
+        );
+
+        ticker.tick(&base).unwrap();
+        ticker.flush(&base.checked_add(jiff::Span::new().seconds(5)).unwrap());
+
+        let segments = store
+            .lock()
+            .unwrap()
+            .segments_between(
+                "kid",
+                at(2026, 8, 19, 0, 0).timestamp(),
+                at(2026, 8, 20, 0, 0).timestamp(),
+            )
+            .unwrap();
+        assert!(segments.iter().all(|s| s.app.is_unknown()), "{segments:?}");
     }
 
     #[test]
@@ -775,7 +1232,7 @@ mod tests {
         let store = store_with(&p, 10_000, &at(2026, 8, 19, 5, 0));
         let sessions = FakeSessions::with(vec![desktop("kid")]);
         let notifier = FakeNotifier::default();
-        let mut ticker = Ticker::new(store, &sessions, &notifier, &cfg());
+        let mut ticker = Ticker::new(store, &sessions, &notifier, AgentReports::new(), &cfg());
 
         ticker.tick(&at(2026, 8, 19, 20, 0)).unwrap();
         assert!(sessions.locked.borrow().is_empty());

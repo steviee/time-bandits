@@ -24,6 +24,7 @@ use anyhow::Context as _;
 use jiff::Zoned;
 use tracing_subscriber::EnvFilter;
 
+use tb_daemon::agentserver::{self, AgentReports};
 use tb_daemon::config::{self, Config};
 use tb_daemon::logind::Logind;
 use tb_daemon::pamserver;
@@ -58,10 +59,15 @@ fn main() -> anyhow::Result<()> {
     ));
     tracing::info!(database = %db.display(), "state loaded");
 
+    // Shared between the socket that receives agent reports and the loop that
+    // uses them. The agent is untrusted, so this only ever refines attribution.
+    let reports = AgentReports::new();
+
     let running = Arc::new(AtomicBool::new(true));
     let ticker = std::thread::Builder::new().name("tb-tick".into()).spawn({
-        let (store, cfg, running) = (store.clone(), cfg.clone(), running.clone());
-        move || run_ticks(&store, &cfg, &running)
+        let (store, cfg, running, reports) =
+            (store.clone(), cfg.clone(), running.clone(), reports.clone());
+        move || run_ticks(&store, &cfg, &running, &reports)
     })?;
 
     // A single-threaded runtime is plenty for the socket: the workload is a
@@ -70,23 +76,39 @@ fn main() -> anyhow::Result<()> {
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
-        .block_on(serve_pam(&cfg, store));
+        .block_on(serve_sockets(&cfg, store, reports));
 
     running.store(false, Ordering::Relaxed);
     let _ = ticker.join();
     let _ = std::fs::remove_file(&cfg.pam_socket);
+    let _ = std::fs::remove_file(&cfg.agent_socket);
     result
 }
 
-async fn serve_pam(cfg: &Config, store: Arc<Mutex<Store>>) -> anyhow::Result<()> {
-    let listener = pamserver::bind(&cfg.pam_socket)
+async fn serve_sockets(
+    cfg: &Config,
+    store: Arc<Mutex<Store>>,
+    reports: AgentReports,
+) -> anyhow::Result<()> {
+    let pam_listener = pamserver::bind(&cfg.pam_socket)
         .with_context(|| format!("binding {}", cfg.pam_socket.display()))?;
-    let pam = tokio::spawn(pamserver::serve(listener, pamserver::Responder::new(store)));
+    let pam = tokio::spawn(pamserver::serve(
+        pam_listener,
+        pamserver::Responder::new(store.clone()),
+    ));
+
+    let agent_listener = agentserver::bind(&cfg.agent_socket)
+        .with_context(|| format!("binding {}", cfg.agent_socket.display()))?;
+    let agent = tokio::spawn(agentserver::serve(
+        agent_listener,
+        agentserver::Receiver::new(store, reports),
+    ));
 
     tracing::info!("timebanditsd ready");
     shutdown_signal().await;
     tracing::info!("shutting down");
     pam.abort();
+    agent.abort();
     Ok(())
 }
 
@@ -96,7 +118,12 @@ async fn serve_pam(cfg: &Config, store: Arc<Mutex<Store>>) -> anyhow::Result<()>
 /// should never happen on a systemd machine, but refusing to start would take
 /// the PAM socket down with it — and an unreachable socket makes the module fail
 /// closed, locking out the whole household over a D-Bus hiccup.
-fn run_ticks(store: &Arc<Mutex<Store>>, cfg: &Config, running: &AtomicBool) {
+fn run_ticks(
+    store: &Arc<Mutex<Store>>,
+    cfg: &Config,
+    running: &AtomicBool,
+    reports: &AgentReports,
+) {
     let interval = Duration::from_secs(cfg.tick_interval.as_secs().max(1));
     let mut ticker: Option<Ticker<Logind, LogNotifier>> = None;
 
@@ -105,13 +132,23 @@ fn run_ticks(store: &Arc<Mutex<Store>>, cfg: &Config, running: &AtomicBool) {
             match Logind::connect() {
                 Ok(logind) => {
                     tracing::info!("connected to logind");
-                    ticker = Some(Ticker::new(store.clone(), logind, LogNotifier, cfg));
+                    ticker = Some(Ticker::new(
+                        store.clone(),
+                        logind,
+                        LogNotifier,
+                        reports.clone(),
+                        cfg,
+                    ));
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "cannot reach logind; enforcement is degraded");
                 }
             }
         }
+
+        // Reports from users who have logged out would otherwise accumulate
+        // for the lifetime of the daemon.
+        reports.expire(jiff::Timestamp::now(), tb_core::DurationSpec::from_mins(10));
 
         if let Some(t) = ticker.as_mut()
             && let Err(e) = t.tick(&Zoned::now())

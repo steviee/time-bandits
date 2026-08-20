@@ -25,9 +25,14 @@ pub struct Config {
     #[serde(default = "default_state_dir")]
     pub state_dir: PathBuf,
 
-    /// Unix socket the PAM module connects to.
+    /// Unix socket the PAM module connects to. Root only.
     #[serde(default = "default_pam_socket")]
     pub pam_socket: PathBuf,
+
+    /// Unix socket the session agents connect to. Reachable by every user;
+    /// the daemon identifies callers by their peer credentials.
+    #[serde(default = "default_agent_socket")]
+    pub agent_socket: PathBuf,
 
     /// How often usage is sampled.
     #[serde(default = "default_tick")]
@@ -49,6 +54,9 @@ fn default_state_dir() -> PathBuf {
 fn default_pam_socket() -> PathBuf {
     PathBuf::from(tb_proto::pam::SOCKET_PATH)
 }
+fn default_agent_socket() -> PathBuf {
+    PathBuf::from(tb_proto::agent::SOCKET_PATH)
+}
 fn default_tick() -> DurationSpec {
     DurationSpec::from_secs(5)
 }
@@ -58,6 +66,7 @@ impl Default for Config {
         Self {
             state_dir: default_state_dir(),
             pam_socket: default_pam_socket(),
+            agent_socket: default_agent_socket(),
             tick_interval: default_tick(),
             hub_url: None,
             managed_group: Some("kids".to_owned()),

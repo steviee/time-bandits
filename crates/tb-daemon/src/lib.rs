@@ -8,6 +8,7 @@
 //! either would be how the two drift into disagreeing about how much time a
 //! child has left.
 
+pub mod agentserver;
 pub mod config;
 pub mod logind;
 pub mod pamserver;
