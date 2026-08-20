@@ -21,10 +21,19 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS Core DBus Qml)
 
 qt_standard_project_setup(REQUIRES 6.6)
 
+# OUTPUT_DIRECTORY, so the generated qmldir and qmltypes land beside the
+# plugin in a directory shaped like the URI. Without it Qt writes them flat
+# into the build root, the install rules below cannot find them, and the module
+# is unloadable — which is how this went unnoticed: no packaging recipe called
+# install-plasma, so nothing ever tried.
+set(MODULE_BUILD_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/qml/org/timebandits/screentime/private")
+
 qt_add_qml_module(timebandits_screentime_plugin
     URI org.timebandits.screentime.private
     VERSION 1.0
     PLUGIN_TARGET timebandits_screentime_plugin
+    OUTPUT_DIRECTORY "${MODULE_BUILD_DIR}"
     SOURCES
         screentimeagent.cpp
         screentimeagent.h
@@ -57,7 +66,8 @@ install(TARGETS timebandits_screentime_plugin
         LIBRARY DESTINATION "${MODULE_DIR}"
         RUNTIME DESTINATION "${MODULE_DIR}")
 
+# A plugin without its qmldir is not a module Qt can import.
 install(FILES
-            "${CMAKE_CURRENT_BINARY_DIR}/org/timebandits/screentime/private/qmldir"
-            "${CMAKE_CURRENT_BINARY_DIR}/org/timebandits/screentime/private/timebandits_screentime_plugin.qmltypes"
+            "${MODULE_BUILD_DIR}/qmldir"
+            "${MODULE_BUILD_DIR}/timebandits_screentime_plugin.qmltypes"
         DESTINATION "${MODULE_DIR}")

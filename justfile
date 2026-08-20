@@ -47,11 +47,25 @@ staged-install:
     dest=$(mktemp -d)
     trap 'rm -rf "$dest"' EXIT
     make build
-    make install DESTDIR="$dest" PREFIX=/usr
+    make install install-plasma DESTDIR="$dest" PREFIX=/usr
+    # The enforcing half...
     for f in usr/bin/timebanditsd usr/bin/tbctl usr/bin/timebandits-agent \
+             usr/lib/security/pam_timebandits.so \
              etc/timebandits/daemon.toml etc/timebandits/policy.d; do
         test -e "$dest/$f" || { echo "missing: $f"; exit 1; }
     done
+    # ...and the half the child actually sees. A plugin without its qmldir is
+    # not a module Qt can import, and that shipped broken because no packaging
+    # recipe ever called install-plasma.
+    for f in usr/share/plasma/plasmoids/org.timebandits.screentime/metadata.json \
+             usr/share/kwin/scripts/org.timebandits.focus/metadata.json \
+             usr/share/locale/de/LC_MESSAGES/plasma_applet_org.timebandits.screentime.mo; do
+        test -e "$dest/$f" || { echo "missing: $f"; exit 1; }
+    done
+    find "$dest" -name qmldir -path "*screentime*" | grep -q . \
+        || { echo "missing: the QML module qmldir"; exit 1; }
+    find "$dest" -name "libtimebandits_screentime_plugin.so" | grep -q . \
+        || { echo "missing: the QML plugin"; exit 1; }
     echo "staged install is complete"
 
 # Build the PAM module on its own and show what came out.
