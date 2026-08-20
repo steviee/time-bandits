@@ -141,12 +141,20 @@ pub fn policy(p: &Policy) -> String {
 
     let _ = writeln!(out, "  daily quota");
     for day in Day::ALL {
+        // A zero quota and an unrestricted one are opposites, and the obvious
+        // renderings — "none" beside "any time" — read as the same thing. Say
+        // "no computer" and drop the hours column entirely, because there are
+        // no hours to state.
+        let blocked_all_day = p.daily_quota.get(day).limit() == Some(DurationSpec::ZERO);
         let quota = match p.daily_quota.get(day) {
+            _ if blocked_all_day => "no computer".to_owned(),
             Quota::Unlimited => "unlimited".to_owned(),
             Quota::Limited(d) => human(*d),
         };
         let windows = p.allowed_windows.get(day);
-        let hours = if windows.is_empty() {
+        let hours = if blocked_all_day {
+            String::new()
+        } else if windows.is_empty() {
             "any time".to_owned()
         } else {
             windows
@@ -351,6 +359,27 @@ mod tests {
         }
         assert!(text.contains("15:00-19:00"), "{text}");
         assert!(text.contains("any time"), "days without windows: {text}");
+    }
+
+    #[test]
+    fn a_day_with_no_allowance_does_not_read_as_unrestricted() {
+        // "none" beside "any time" is the same sentence as "unlimited" beside
+        // "any time" to anyone scanning the column, and it means the opposite.
+        let mut p = policy_2h();
+        p.daily_quota
+            .set(Day::Wednesday, Quota::Limited(DurationSpec::ZERO));
+        let text = policy(&p);
+
+        let line = text
+            .lines()
+            .find(|l| l.contains("wednesday"))
+            .expect("wednesday");
+        assert!(line.contains("no computer"), "{line}");
+        assert!(
+            !line.contains("any time"),
+            "hours are meaningless here: {line}"
+        );
+        assert!(!line.contains("none"), "{line}");
     }
 
     #[test]

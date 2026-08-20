@@ -577,6 +577,87 @@ mod tests {
     }
 
     #[test]
+    fn every_weekday_can_carry_its_own_amount_and_its_own_hours() {
+        // Seven different days, both dimensions varying independently: how much
+        // and when. Monday through Sunday of one real week.
+        let mut p = policy_2h();
+        let plan = [
+            (Day::Monday, 1, (16, 18)),
+            (Day::Tuesday, 2, (15, 19)),
+            (Day::Wednesday, 0, (0, 0)),
+            (Day::Thursday, 2, (15, 19)),
+            (Day::Friday, 3, (14, 21)),
+            (Day::Saturday, 4, (9, 21)),
+            (Day::Sunday, 2, (10, 18)),
+        ];
+        for (day, hours, (from, to)) in plan {
+            p.daily_quota
+                .set(day, Quota::Limited(DurationSpec::from_hours(hours)));
+            p.allowed_windows.set(
+                day,
+                if hours == 0 {
+                    // A day with no allowance needs no window; giving it one
+                    // would be the contradiction validate() rejects.
+                    Vec::new()
+                } else {
+                    vec![TimeWindow::new(
+                        civil::time(from, 0, 0, 0),
+                        civil::time(to, 0, 0, 0),
+                    )]
+                },
+            );
+        }
+        assert!(p.validate().is_ok(), "{:?}", p.validate());
+
+        // 2026-08-24 is a Monday, so the dates below walk the week in order.
+        let expectations = [
+            (24, 17, true, DurationSpec::from_hours(1)), // Mon, inside 16–18
+            (24, 19, false, DurationSpec::ZERO),         // Mon, past the window
+            (25, 16, true, DurationSpec::from_hours(2)), // Tue
+            (26, 16, false, DurationSpec::ZERO),         // Wed, zero allowance
+            (28, 15, true, DurationSpec::from_hours(3)), // Fri
+            (29, 10, true, DurationSpec::from_hours(4)), // Sat
+            (30, 11, true, DurationSpec::from_hours(2)), // Sun
+        ];
+        for (date, hour, allowed, remaining) in expectations {
+            let now = at(2026, 8, date, hour, 0);
+            let v = evaluate(&p, &UsageSnapshot::default(), &now);
+            assert_eq!(v.is_allowed(), allowed, "2026-08-{date} at {hour}:00");
+            if allowed {
+                assert_eq!(
+                    v.remaining(),
+                    Some(remaining),
+                    "2026-08-{date} at {hour}:00 should have {remaining} left"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fully_varied_week_survives_a_round_trip() {
+        // WeekSchedule flattens its overrides next to `default`. With all seven
+        // days set there is no default left to fall back on, which is exactly
+        // when a flatten bug would show.
+        let mut p = policy_2h();
+        for (i, day) in Day::ALL.into_iter().enumerate() {
+            p.daily_quota.set(
+                day,
+                Quota::Limited(DurationSpec::from_mins(30 * (i as u64 + 1))),
+            );
+        }
+        let json = serde_json::to_string(&p).unwrap();
+        let back: Policy = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        for (i, day) in Day::ALL.into_iter().enumerate() {
+            assert_eq!(
+                *back.daily_quota.get(day),
+                Quota::Limited(DurationSpec::from_mins(30 * (i as u64 + 1))),
+                "{day}"
+            );
+        }
+    }
+
+    #[test]
     fn a_day_with_zero_quota_blocks_all_day() {
         let mut p = policy_2h();
         p.daily_quota
