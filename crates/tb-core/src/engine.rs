@@ -657,6 +657,110 @@ mod tests {
         }
     }
 
+    /// The two arrangements a household actually describes out loud, built the
+    /// same way: a budget saying *how much*, and windows saying *when*. The two
+    /// are independent, and either budget works with either set of windows.
+    ///
+    /// Windows for the common shape — weekdays after school, weekends from
+    /// midday — with 2026-08-24 being a Monday.
+    fn school_week_windows() -> WeekSchedule<Vec<TimeWindow>> {
+        let weekday = vec![TimeWindow::new(
+            civil::time(15, 0, 0, 0),
+            civil::time(20, 0, 0, 0),
+        )];
+        let weekend = vec![TimeWindow::new(
+            civil::time(12, 0, 0, 0),
+            civil::time(20, 0, 0, 0),
+        )];
+        let mut w = WeekSchedule::uniform(weekday);
+        w.set(Day::Saturday, weekend.clone());
+        w.set(Day::Sunday, weekend);
+        w
+    }
+
+    #[test]
+    fn two_hours_a_day_but_only_between_three_and_eight() {
+        let mut p = policy_2h();
+        p.allowed_windows = school_week_windows();
+        assert!(p.validate().is_ok());
+
+        // Before the window opens: refused, and told when it opens.
+        let v = evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 24, 14, 0));
+        let d = v.denial().expect("outside the window");
+        assert_eq!(d.reason, DenyReason::OutsideAllowedWindow);
+        let retry = d.retry_at.as_ref().unwrap();
+        assert_eq!(retry.date(), civil::date(2026, 8, 24));
+        assert_eq!(retry.hour(), 15, "same afternoon, not tomorrow");
+
+        // Inside it: the budget is what binds.
+        let v = evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 24, 16, 0));
+        let Verdict::Allowed(a) = v else {
+            panic!("expected allowed")
+        };
+        assert_eq!(a.remaining, Some(DurationSpec::from_hours(2)));
+        assert_eq!(a.limited_by, LimitedBy::DailyQuota);
+
+        // Late in the window the closing time binds instead, even with budget
+        // to spare — which is the whole point of having a frame.
+        let v = evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 24, 19, 0));
+        let Verdict::Allowed(a) = v else {
+            panic!("expected allowed")
+        };
+        assert_eq!(a.remaining, Some(DurationSpec::from_hours(1)));
+        assert_eq!(a.limited_by, LimitedBy::Window);
+
+        // Saturday opens earlier.
+        assert!(evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 29, 12, 30)).is_allowed());
+        assert!(!evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 24, 12, 30)).is_allowed());
+    }
+
+    #[test]
+    fn fourteen_hours_a_week_within_the_same_daily_frame() {
+        // The other arrangement: the child divides the week up themselves, but
+        // never at three in the morning.
+        let mut p = policy_2h();
+        p.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(14));
+        p.allowed_windows = school_week_windows();
+        assert!(p.validate().is_ok());
+
+        // Four hours on Saturday is the child's call while the week has room.
+        let used = UsageSnapshot {
+            used_today: DurationSpec::from_hours(4),
+            used_this_week: DurationSpec::from_hours(9),
+            ..UsageSnapshot::default()
+        };
+        let v = evaluate(&p, &used, &at(2026, 8, 29, 16, 0));
+        let Verdict::Allowed(a) = v else {
+            panic!("expected allowed")
+        };
+        assert_eq!(a.remaining, Some(DurationSpec::from_hours(4)));
+        assert_eq!(
+            a.limited_by,
+            LimitedBy::Window,
+            "20:00 comes before the week runs out"
+        );
+
+        // The frame holds regardless of how much budget is left: three in the
+        // morning is refused with the whole week untouched.
+        let v = evaluate(&p, &UsageSnapshot::default(), &at(2026, 8, 26, 3, 0));
+        assert_eq!(
+            v.denial().map(|d| d.reason),
+            Some(DenyReason::OutsideAllowedWindow)
+        );
+
+        // And spending the week stops them inside the window too.
+        let spent = UsageSnapshot {
+            used_this_week: DurationSpec::from_hours(14),
+            ..UsageSnapshot::default()
+        };
+        let v = evaluate(&p, &spent, &at(2026, 8, 28, 16, 0));
+        assert_eq!(
+            v.denial().map(|d| d.reason),
+            Some(DenyReason::WeeklyQuotaExhausted)
+        );
+    }
+
     #[test]
     fn a_day_with_zero_quota_blocks_all_day() {
         let mut p = policy_2h();
