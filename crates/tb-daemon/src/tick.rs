@@ -1154,7 +1154,7 @@ mod tests {
             .enumerate()
         {
             let now = base
-                .checked_add(jiff::Span::new().seconds(i as i64 * 5))
+                .checked_add(jiff::Span::new().seconds(i64::try_from(i).unwrap_or(0) * 5))
                 .unwrap();
             reports.record("kid", report, now.timestamp());
             ticker.tick(&now).unwrap();
