@@ -41,6 +41,17 @@ jobs:
       - name: Shell scripts pass shellcheck
         run: shellcheck -S warning tests/vm/*.sh
 
+  pam-integration:
+    name: The PAM module against a real PAM stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Unit tests cover the module's decisions; they cannot cover what libpam
+      # does with them. This job found two faults the first time it ran — a
+      # control word that locked every account out when the module was missing,
+      # and a group check applied in one half of enforcement but not the other.
+      - run: tests/pam/integration.sh
+
   pam-module:
     name: PAM module loads and exports its symbols
     runs-on: ubuntu-latest
