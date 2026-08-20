@@ -321,6 +321,7 @@ Honest list of what stands between here and something a household can use:
 
 | Document | Covers |
 |---|---|
+| [docs/decisions.md](docs/decisions.md) | Settled questions and the reasoning that settled them |
 | [docs/architecture.md](docs/architecture.md) | Why these components exist, what each is authoritative for |
 | [docs/pam-setup.md](docs/pam-setup.md) | PAM integration, safety properties, and how to get back in |
 | [docs/threat-model.md](docs/threat-model.md) | Who this defends against, and what defeats it |
