@@ -49,7 +49,7 @@ not match the host is refused. We ship `ID=_any`, so a rebase does not silently
 unload it; the binaries depend only on glibc, libpam and libsqlite3, and glibc
 runs older binaries than itself.
 
-**SELinux.** The image carries the labels, applied with `setfiles` against the
+**SELinux, twice over.** The image carries the labels, applied with `setfiles` against the
 host policy before the image is built. A mislabelled `pam_timebandits.so`
 cannot be loaded by sddm, and — because the module is fail-safe — logins keep
 working while enforcement is quietly absent.
@@ -62,3 +62,37 @@ make sysext            # needs mksquashfs; SELinux labelling needs root
 
 The image is reproducible from a checkout and contains nothing that was not
 built from it.
+
+
+## SELinux: the login services need to be let through
+
+The PAM module does not run in a process of ours. It runs inside whatever is
+authenticating — the display manager, the lock screen helper, `login`, `sshd` —
+and asks the daemon over a socket in `/run`. Those domains are confined, and
+none of them may write to a socket carrying the generic `var_run_t` label.
+
+The failure is quiet in the worst way: the *connect* succeeds and only the
+*write* is denied, so the module falls back to its failsafe and refuses a
+managed child while everything reports healthy. On Bazzite 44 that meant a child
+with no limits set could not log in at all, and the message said the screen-time
+service was unavailable.
+
+`packaging/selinux/` carries a policy module that gives `/run/timebandits` a
+type of its own and opens only that to the four login domains — rather than
+letting them write any socket in `/run`.
+
+```sh
+packaging/selinux/build.sh          # needs checkpolicy; build it in a container
+sudo semodule -i packaging/selinux/timebandits.pp
+sudo systemctl restart timebanditsd # so the socket is created with the new label
+```
+
+Two details that cost a debugging round each. The type needs `file_type` and
+`non_security_file_type`, or systemd fails to set up `RuntimeDirectory=` with
+status 233 and never logs a denial. And `semodule_package` needs `-f` for the
+file contexts, or the directory keeps the label the rules do not cover.
+
+`tbctl pam probe` asks the daemon exactly what the module asks, and `tbctl
+doctor` now does the same rather than only opening a connection — a check that
+connects and stops cannot see this failure at all, which is why it reported a
+healthy daemon while nobody could log in.

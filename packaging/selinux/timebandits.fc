@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Plain contexts, not gen_context(): that is a refpolicy macro, and this is a
+# raw module built with checkmodule so it needs no policy development package.
+#
+# systemd creates /run/timebandits through RuntimeDirectory= and labels it from
+# here, and the sockets the daemon creates inside inherit that label.
+
+/run/timebandits(/.*)?    system_u:object_r:timebandits_runtime_t:s0

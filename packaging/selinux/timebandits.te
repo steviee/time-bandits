@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Lets the login services reach the daemon.
+#
+# The PAM module does not run in a process of ours. It runs inside whatever is
+# authenticating — the display manager, the lock screen helper, login, sshd —
+# and asks the daemon over a unix socket in /run. On a system with SELinux
+# enforcing, those domains are confined and may not write to a socket carrying
+# the generic var_run_t label, so the module cannot ask its question.
+#
+# The failure is quiet in the worst way. The connect succeeds and only the
+# write is denied, so the module falls back to its failsafe and refuses a
+# managed child, while everything reports healthy. On Bazzite 44 that meant a
+# child with no limits set could not log in at all, with the message saying the
+# service was unavailable.
+#
+# Rather than allowing these domains to write any var_run_t socket, the
+# daemon's runtime directory gets a type of its own and only that is opened up.
+
+module timebandits 1.0;
+
+require {
+	attribute file_type;
+	attribute non_security_file_type;
+	type init_t;
+	type xdm_t;
+	type local_login_t;
+	type sshd_t;
+	type unconfined_service_t;
+	class dir { add_name create getattr open read relabelfrom relabelto remove_name rmdir search setattr write };
+	class sock_file { create getattr open relabelfrom relabelto setattr unlink write };
+	class unix_stream_socket { connectto };
+	class file { getattr open read };
+}
+
+# Our own type for /run/timebandits, so nothing below widens access to the rest
+# of /run.
+#
+# The attributes are not decoration: a bare `type` declaration produces
+# something the generic file rules do not apply to, and systemd then fails to
+# set up RuntimeDirectory= with status 233 rather than logging a denial.
+type timebandits_runtime_t;
+typeattribute timebandits_runtime_t file_type, non_security_file_type;
+
+# systemd creates and labels the directory through RuntimeDirectory= — before
+# the daemon exists, so these rules belong to init_t and not to us.
+allow init_t timebandits_runtime_t:dir
+	{ add_name create getattr open read relabelfrom relabelto remove_name rmdir search setattr write };
+allow init_t timebandits_runtime_t:sock_file
+	{ getattr relabelfrom relabelto unlink };
+
+# The daemon creates the sockets inside it.
+allow unconfined_service_t timebandits_runtime_t:dir
+	{ add_name create getattr open read remove_name rmdir search setattr write };
+allow unconfined_service_t timebandits_runtime_t:sock_file
+	{ create getattr open setattr unlink write };
+
+# The four domains a login can come from. Each needs to find the directory and
+# write to the socket; connectto is what actually carries the query.
+allow xdm_t timebandits_runtime_t:dir { getattr open read search };
+allow xdm_t timebandits_runtime_t:sock_file { getattr open write };
+allow xdm_t unconfined_service_t:unix_stream_socket connectto;
+
+allow local_login_t timebandits_runtime_t:dir { getattr open read search };
+allow local_login_t timebandits_runtime_t:sock_file { getattr open write };
+allow local_login_t unconfined_service_t:unix_stream_socket connectto;
+
+allow sshd_t timebandits_runtime_t:dir { getattr open read search };
+allow sshd_t timebandits_runtime_t:sock_file { getattr open write };
+allow sshd_t unconfined_service_t:unix_stream_socket connectto;

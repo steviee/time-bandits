@@ -161,16 +161,55 @@ fn check_daemon(socket: &Path) -> Check {
             format!("{} is missing — is timebanditsd running?", socket.display()),
         );
     }
-    // Existing is not the same as listening: a socket left behind by a killed
-    // daemon looks identical until something tries to connect.
-    match UnixStream::connect(socket) {
-        Ok(_) => Check::new("daemon", Level::Ok, "running and answering"),
-        Err(e) => Check::new(
-            "daemon",
-            Level::Fail,
-            format!("socket exists but will not accept a connection: {e}"),
-        ),
+    // Connecting is not the same as being answered, and the difference is not
+    // academic: an SELinux policy can permit the connect and deny the write, so
+    // the module falls back to its failsafe and refuses a child while this
+    // check reports the daemon healthy. Ask a real question instead.
+    match probe(socket) {
+        Ok(()) => Check::new("daemon", Level::Ok, "running and answering"),
+        Err(e) => Check::new("daemon", Level::Fail, e),
     }
+}
+
+/// Sends a real query and reads the answer, the way the PAM module does.
+///
+/// Asks about `root`, which every stack ignores, so the probe cannot change
+/// anybody's state or write an event.
+pub fn probe(socket: &Path) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let timeout = std::time::Duration::from_millis(1500);
+    let stream = UnixStream::connect(socket)
+        .map_err(|e| format!("socket exists but will not accept a connection: {e}"))?;
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+
+    let query = tb_proto::pam::Query::new("root", "tbctl-doctor", tb_proto::pam::Phase::Account);
+    let line = serde_json::to_string(&query).map_err(|e| e.to_string())?;
+
+    let mut writer = &stream;
+    writer
+        .write_all(line.as_bytes())
+        .and_then(|()| writer.write_all(b"\n"))
+        .and_then(|()| writer.flush())
+        .map_err(|e| {
+            format!(
+                "connected, but the query could not be sent: {e}. \
+                 On an SELinux system check for a denial on {}",
+                socket.display()
+            )
+        })?;
+
+    let mut answer = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut answer)
+        .map_err(|e| format!("connected, but no answer came back: {e}"))?;
+    if answer.trim().is_empty() {
+        return Err("connected and sent a query, but the daemon closed without answering".into());
+    }
+    serde_json::from_str::<tb_proto::pam::Answer>(&answer)
+        .map(|_| ())
+        .map_err(|e| format!("the daemon answered something unreadable: {e}"))
 }
 
 fn check_database(db: &Path) -> Check {
@@ -342,12 +381,46 @@ mod tests {
         assert!(check.detail.contains("will not accept"), "{}", check.detail);
     }
 
+    /// A stand-in daemon that answers one query, so the probe has something to
+    /// talk to.
+    fn fake_daemon(socket: &Path) -> std::thread::JoinHandle<()> {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        std::thread::spawn(move || {
+            while let Ok((stream, _)) = listener.accept() {
+                let mut line = String::new();
+                if BufReader::new(&stream).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let answer = serde_json::to_string(&tb_proto::pam::Answer::ignore()).unwrap();
+                let mut w = &stream;
+                let _ = w
+                    .write_all(answer.as_bytes())
+                    .and_then(|()| w.write_all(b"\n"));
+            }
+        })
+    }
+
     #[test]
-    fn a_listening_socket_passes() {
+    fn a_socket_that_answers_passes() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env_in(dir.path());
+        let _daemon = fake_daemon(&env.socket);
+        assert_eq!(check_daemon(&env.socket).level, Level::Ok);
+    }
+
+    #[test]
+    fn a_socket_that_accepts_but_never_answers_fails() {
+        // The failure this check exists for. An SELinux policy can permit the
+        // connect and deny the write, so the PAM module falls back to its
+        // failsafe and refuses a child while a connect-only check calls the
+        // daemon healthy. That happened on a Bazzite machine.
         let dir = tempfile::tempdir().unwrap();
         let env = env_in(dir.path());
         let _listener = std::os::unix::net::UnixListener::bind(&env.socket).unwrap();
-        assert_eq!(check_daemon(&env.socket).level, Level::Ok);
+        let check = check_daemon(&env.socket);
+        assert_eq!(check.level, Level::Fail);
+        assert!(check.detail.contains("answer"), "{}", check.detail);
     }
 
     #[test]
@@ -428,7 +501,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("security")).unwrap();
         fs::write(dir.path().join("security/pam_timebandits.so"), b"").unwrap();
         fs::write(&env.database, b"").unwrap();
-        let _listener = std::os::unix::net::UnixListener::bind(&env.socket).unwrap();
+        let _daemon = fake_daemon(&env.socket);
         for service in ["kde", "sddm", "login"] {
             fs::write(
                 env.pam.service_path(service),

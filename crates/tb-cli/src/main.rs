@@ -245,6 +245,16 @@ enum PamCommand {
         #[arg(long)]
         vendor_root: Option<PathBuf>,
     },
+    /// Ask the daemon the question the module asks, and report the answer.
+    ///
+    /// Useful under `runcon`: the module runs inside the display manager, which
+    /// on an `SELinux` system is confined differently from a shell, and a policy
+    /// can permit the connect while denying the query.
+    Probe {
+        /// Socket to ask, instead of the packaged one.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
     /// Report which services carry the module.
     Status {
         #[arg(long, default_value = "/etc/pam.d")]
@@ -578,6 +588,18 @@ fn pam_command(cmd: &PamCommand) -> Result<ExitCode> {
             let pam = pam_dir(root, vendor_root.as_deref());
             for change in pam.disable(*dry_run)? {
                 println!("{change}");
+            }
+        }
+        PamCommand::Probe { socket } => {
+            let path = socket
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(tb_proto::pam::SOCKET_PATH));
+            match doctor::probe(&path) {
+                Ok(()) => println!("  ok       {} answered", path.display()),
+                Err(e) => {
+                    println!("  FAIL     {e}");
+                    return Ok(ExitCode::FAILURE);
+                }
             }
         }
         PamCommand::Status { root, vendor_root } => {
