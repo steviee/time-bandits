@@ -19,6 +19,7 @@ Source0:        %{url}/archive/v%{version}/%{name}-%{version}.tar.gz
 # Produced by `make vendor`. Build hosts have no network, so dependencies
 # have to travel with the source.
 Source1:        vendor.tar.zst
+Source2:        timebandits.conf
 
 ExclusiveArch:  x86_64 aarch64
 
@@ -80,7 +81,14 @@ cargo test --workspace --locked --offline
     BINDIR=%{_bindir} \
     SYSCONFDIR=%{_sysconfdir} \
     UNITDIR=%{_unitdir} \
+    USERUNITDIR=%{_userunitdir} \
+    SYSUSERSDIR=%{_sysusersdir} \
     PAMDIR=%{_libdir}/security
+
+%pre
+# The groups must exist before any file that references them, and before an
+# administrator adds the first child to one.
+%sysusers_create_package %{name} %{SOURCE2}
 
 %post
 %systemd_post timebanditsd.service
@@ -106,9 +114,12 @@ fi
 %license LICENSES/GPL-3.0-or-later.txt
 %doc README.md docs/pam-setup.md docs/architecture.md docs/threat-model.md
 %{_bindir}/timebanditsd
+%{_bindir}/timebandits-agent
 %{_bindir}/tbctl
 %{_libdir}/security/pam_timebandits.so
 %{_unitdir}/timebanditsd.service
+%{_userunitdir}/timebandits-agent.service
+%{_sysusersdir}/timebandits.conf
 %dir %{_sysconfdir}/timebandits
 %config(noreplace) %{_sysconfdir}/timebandits/daemon.toml
 

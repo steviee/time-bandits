@@ -12,6 +12,8 @@ BINDIR      ?= $(PREFIX)/bin
 DATADIR     ?= $(PREFIX)/share
 SYSCONFDIR  ?= /etc
 UNITDIR     ?= $(PREFIX)/lib/systemd/system
+USERUNITDIR ?= $(PREFIX)/lib/systemd/user
+SYSUSERSDIR ?= $(PREFIX)/lib/sysusers.d
 
 # PAM modules live in a different place on every distribution:
 #   Arch          /usr/lib/security
@@ -33,7 +35,7 @@ DISTNAME  = time-bandits-$(VERSION)
 all: build
 
 build:
-	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam -p tb-cli
+	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam -p tb-cli -p tb-agent
 
 # The one component CMake builds: Plasma 6 gives QML no way to speak D-Bus, so
 # the widget needs a compiled plugin. Qt only — no KDE Frameworks, no ECM.
@@ -58,8 +60,13 @@ install: install-daemon install-pam install-config
 install-daemon:
 	$(INSTALL) -Dm0755 $(TARGETDIR)/timebanditsd $(DESTDIR)$(BINDIR)/timebanditsd
 	$(INSTALL) -Dm0755 $(TARGETDIR)/tbctl $(DESTDIR)$(BINDIR)/tbctl
+	$(INSTALL) -Dm0755 $(TARGETDIR)/timebandits-agent $(DESTDIR)$(BINDIR)/timebandits-agent
 	$(INSTALL) -Dm0644 packaging/systemd/timebanditsd.service \
 		$(DESTDIR)$(UNITDIR)/timebanditsd.service
+	$(INSTALL) -Dm0644 packaging/systemd/timebandits-agent.service \
+		$(DESTDIR)$(USERUNITDIR)/timebandits-agent.service
+	$(INSTALL) -Dm0644 packaging/sysusers/timebandits.conf \
+		$(DESTDIR)$(SYSUSERSDIR)/timebandits.conf
 
 install-pam:
 	$(INSTALL) -Dm0755 $(TARGETDIR)/libpam_timebandits.so \

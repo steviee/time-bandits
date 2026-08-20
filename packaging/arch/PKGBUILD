@@ -57,7 +57,9 @@ package() {
     DESTDIR="${pkgdir}" \
     PREFIX=/usr \
     PAMDIR=/usr/lib/security \
-    UNITDIR=/usr/lib/systemd/system
+    UNITDIR=/usr/lib/systemd/system \
+    USERUNITDIR=/usr/lib/systemd/user \
+    SYSUSERSDIR=/usr/lib/sysusers.d
 
   install -Dm0644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
   install -Dm0644 docs/pam-setup.md "${pkgdir}/usr/share/doc/${pkgname}/pam-setup.md"

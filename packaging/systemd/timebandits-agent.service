@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Time Bandits contributors
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A *user* unit: one instance per logged-in person, running as them.
+#
+# It holds no authority. Killing it costs the child their warnings and the
+# per-application breakdown; the daemon keeps counting and keeps enforcing, and
+# records that tracking went blind.
+
+[Unit]
+Description=Time Bandits session agent
+Documentation=https://github.com/steviee/time-bandits
+# Tied to the graphical session: there is nothing to report from a text console,
+# and the Wayland and D-Bus connections it needs only exist here.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/timebandits-agent
+# A crash costs warnings, so it is worth coming back — but not in a tight loop
+# on a machine where the daemon is simply absent.
+Restart=on-failure
+RestartSec=5
+
+# Nothing here needs privileges beyond the user's own.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=graphical-session.target

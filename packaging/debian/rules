@@ -25,6 +25,8 @@ override_dh_auto_install:
 	    PREFIX=/usr \
 	    SYSCONFDIR=/etc \
 	    UNITDIR=/usr/lib/systemd/system \
+	    USERUNITDIR=/usr/lib/systemd/user \
+	    SYSUSERSDIR=/usr/lib/sysusers.d \
 	    PAMDIR=/usr/lib/$(DEB_HOST_MULTIARCH)/security
 
 # dh_clean deletes anything with `.orig` in the name, treating it as a leftover
