@@ -140,6 +140,12 @@ pub struct State {
     /// Seconds of usage recorded today, for the plasmoid.
     #[serde(default)]
     pub used_today_secs: u64,
+    /// Remaining-time thresholds at which the child should be warned, in
+    /// seconds, descending. Sent by the daemon so the policy stays the single
+    /// source of truth rather than the agent carrying its own idea of when to
+    /// speak up.
+    #[serde(default)]
+    pub warn_at_secs: Vec<u64>,
 }
 
 impl State {
@@ -155,7 +161,26 @@ impl State {
             message: None,
             record_titles: false,
             used_today_secs: 0,
+            warn_at_secs: Vec::new(),
         }
+    }
+
+    /// Whether a warning is due when this much time is left, given what has
+    /// already been announced.
+    ///
+    /// Every threshold at or above `remaining` counts as crossed, but only one
+    /// notification is produced. A machine that was asleep through the 15 and 5
+    /// minute marks and wakes at 3 should say one thing, not three.
+    #[must_use]
+    pub fn crossed_thresholds(&self, remaining_secs: u64) -> Vec<u64> {
+        let mut crossed: Vec<u64> = self
+            .warn_at_secs
+            .iter()
+            .copied()
+            .filter(|&t| remaining_secs <= t)
+            .collect();
+        crossed.sort_unstable_by(|a, b| b.cmp(a));
+        crossed
     }
 }
 
@@ -233,6 +258,20 @@ mod tests {
         let title = focus.title.unwrap();
         assert_eq!(title.chars().count(), MAX_TITLE_LEN);
         assert!(title.chars().all(|c| c == 'ä'));
+    }
+
+    #[test]
+    fn crossed_thresholds_reports_every_mark_passed() {
+        let state = State {
+            warn_at_secs: vec![900, 300, 60],
+            ..State::unmanaged("kid")
+        };
+        assert_eq!(state.crossed_thresholds(1200), Vec::<u64>::new());
+        assert_eq!(state.crossed_thresholds(600), vec![900]);
+        // Woken from sleep with three minutes left: two marks were passed, and
+        // the caller announces once.
+        assert_eq!(state.crossed_thresholds(180), vec![900, 300]);
+        assert_eq!(state.crossed_thresholds(0), vec![900, 300, 60]);
     }
 
     #[test]

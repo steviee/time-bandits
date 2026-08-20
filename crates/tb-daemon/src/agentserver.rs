@@ -170,6 +170,11 @@ impl Receiver {
             enforcement: policy.enforcement,
             record_titles: policy.record_window_titles,
             used_today_secs: snapshot.used_today.as_secs(),
+            warn_at_secs: policy
+                .sorted_warnings()
+                .iter()
+                .map(DurationSpec::as_secs)
+                .collect(),
             ..State::unmanaged(subject)
         };
 
@@ -426,6 +431,11 @@ mod tests {
         assert_eq!(state.remaining_secs, Some(30 * 60));
         assert_eq!(state.used_today_secs, 90 * 60);
         assert!(!state.blocked);
+        assert_eq!(
+            state.warn_at_secs,
+            vec![900, 300, 60],
+            "the policy decides when to warn, not the agent"
+        );
     }
 
     #[test]
