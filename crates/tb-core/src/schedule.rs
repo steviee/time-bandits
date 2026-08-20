@@ -254,21 +254,18 @@ pub fn policy_day(now: &Zoned, day_start: civil::Time) -> PolicyDay {
 
 /// When does the current policy day end, as a real instant?
 ///
-/// Goes through `jiff` and therefore respects daylight-saving transitions: if
-/// `day_start` falls into a skipped hour, the instant moves forward instead of
-/// failing.
+/// A `day_start` inside a daylight-saving gap moves forward rather than
+/// failing — `jiff`'s compatible disambiguation. That matters twice a year with
+/// the default 04:00 nowhere near the gap, and more often for anyone who sets
+/// day_start into the small hours.
 #[must_use]
 pub fn policy_day_end(day: PolicyDay, day_start: civil::Time, tz: &TimeZone) -> Zoned {
     let next = day.date.tomorrow().unwrap_or(day.date);
-    next.to_datetime(day_start)
-        .to_zoned(tz.clone())
-        .unwrap_or_else(|_| {
-            // Only reachable if the zone has no such instant at all; falling back
-            // to midnight beats aborting the evaluation.
-            next.to_datetime(civil::Time::midnight())
-                .to_zoned(tz.clone())
-                .expect("midnight exists in every time zone")
-        })
+    let wall = next.to_datetime(day_start);
+    wall.to_zoned(tz.clone()).unwrap_or_else(|_| {
+        wall.to_zoned(TimeZone::UTC)
+            .unwrap_or_else(|_| Zoned::new(jiff::Timestamp::UNIX_EPOCH, TimeZone::UTC))
+    })
 }
 
 /// Truncates to whole seconds — ticks are second-granular, and stray
@@ -353,6 +350,21 @@ mod tests {
         assert_eq!(format!("{:<10}|", Day::Monday), "monday    |");
         assert_eq!(format!("{:>10}|", Day::Sunday), "    sunday|");
         assert_eq!(format!("{}", Day::Friday), "friday");
+    }
+
+    #[test]
+    fn a_policy_day_that_starts_in_a_skipped_hour_moves_forward() {
+        // Twice a year in the target market, and reachable whenever day_start
+        // is set into the small hours.
+        let tz = TimeZone::get("Europe/Berlin").unwrap();
+        let pd = PolicyDay {
+            date: civil::date(2026, 3, 28),
+            day: Day::Saturday,
+        };
+        let end = policy_day_end(pd, civil::time(2, 30, 0, 0), &tz);
+        assert_eq!(end.date(), civil::date(2026, 3, 29));
+        assert_eq!(end.hour(), 3, "02:30 does not exist, so it becomes 03:30");
+        assert_eq!(end.minute(), 30);
     }
 
     #[test]

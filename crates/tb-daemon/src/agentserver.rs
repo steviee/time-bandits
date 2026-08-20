@@ -97,6 +97,9 @@ impl AgentReports {
 #[must_use]
 pub fn user_name(uid: u32) -> Option<String> {
     let mut buf = vec![0i8; 1024];
+    // SAFETY: `passwd` is a C struct of plain data and raw pointers, for which
+    // an all-zero bit pattern is a valid value. `getpwuid_r` overwrites it
+    // before anything reads it.
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = std::ptr::null_mut();
 
@@ -466,6 +469,7 @@ mod tests {
     #[test]
     fn the_current_uid_resolves_to_a_name() {
         // Sanity check on the NSS wrapper: whoever runs the tests exists.
+        // SAFETY: `getuid` takes no arguments, touches no memory and cannot fail.
         let me = user_name(unsafe { libc::getuid() });
         assert!(me.is_some(), "the running user must resolve");
         assert!(user_name(4_294_967_294).is_none(), "nobody has this uid");
@@ -496,6 +500,7 @@ mod tests {
         let state: State = serde_json::from_str(response.trim()).unwrap();
 
         // The daemon filed it under the running user, which the test never told it.
+        // SAFETY: `getuid` takes no arguments, touches no memory and cannot fail.
         let me = user_name(unsafe { libc::getuid() }).unwrap();
         assert_eq!(state.subject, me);
         // This one legitimately uses the real clock: the server stamped the

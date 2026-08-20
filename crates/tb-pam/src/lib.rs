@@ -146,19 +146,24 @@ unsafe fn run(
     argv: *const *const c_char,
     phase: Phase,
 ) -> ModuleResult {
+    // SAFETY: `argc`/`argv` are the vector libpam passed to the entry point,
+    // which this function's own contract requires the caller to uphold.
     let args = unsafe { collect_args(argc, argv) };
     let cfg = Config::from_args(args.iter().map(String::as_str));
 
+    // SAFETY: `pamh` is the handle libpam passed in, per this function's contract.
     let Some(user) = (unsafe { ffi::get_user(pamh) }) else {
         // Without a user there is nothing to decide about.
         return ModuleResult::Ignore;
     };
+    // SAFETY: as above — `pamh` is valid for the duration of the call.
     let service = unsafe { ffi::get_service(pamh) }.unwrap_or_else(|| "unknown".to_owned());
 
     let env = RealEnvironment { cfg: &cfg };
     match decide(&cfg, &env, &user, &service, phase) {
         Outcome::Ignore => ModuleResult::Ignore,
         Outcome::Deny(message) => {
+            // SAFETY: `pamh` is valid, and `message` outlives the call.
             unsafe { ffi::show_error(pamh, &message) };
             syslog(&format!("denied {user} on service {service}: {message}"));
             match phase {
@@ -239,6 +244,9 @@ mod tests {
 
     #[test]
     fn setcred_never_grants_anything() {
+        // SAFETY: setcred ignores every argument — it holds no credentials and
+        // dereferences nothing — so null handles are sound here and let the test
+        // check the return value without standing up a PAM stack.
         let rc = unsafe { pam_sm_setcred(std::ptr::null_mut(), 0, 0, std::ptr::null()) };
         assert_eq!(rc, ffi::PAM_IGNORE);
     }
