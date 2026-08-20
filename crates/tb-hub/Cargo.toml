@@ -15,7 +15,34 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+anyhow = "1.0.104"
+argon2 = { version = "0.5.3", features = ["std"] }
+axum = { version = "0.8.9", features = ["macros"] }
+base64 = "0.23.1"
+getrandom = "0.4.3"
+jiff = { version = "0.2.35", features = ["serde"] }
+rusqlite = "0.40.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+subtle = "2.6.1"
+tb-core.workspace = true
+tb-proto.workspace = true
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "net", "time", "signal", "macros", "sync"] }
+toml = "1.1.4"
+tower-http = { version = "0.7.0", features = ["trace", "compression-gzip"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.24.1", features = ["v7", "serde"] }
+
+[lib]
+name = "tb_hub"
+path = "src/lib.rs"
 
 [[bin]]
 name = "timebandits-hub"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"
