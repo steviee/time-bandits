@@ -1,20 +1,22 @@
 # SPDX-FileCopyrightText: 2026 Time Bandits contributors
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Toolchain für Time Bandits. `mise install` richtet alles ein.
+# Toolchain for Time Bandits. `mise install` sets everything up.
 
 [tools]
 rust  = { version = "1.97", components = "rustfmt,clippy", profile = "default" }
 node  = "24"
 pnpm  = "latest"
 just  = "latest"
-gh    = "latest"   # GitHub-CLI: Repo-Verwaltung, Releases, CI-Logs
+gh    = "latest"        # repository work, releases, CI logs
+# The VM walkthrough's safety guards are shell, and get linted like the rest.
+shellcheck = "0.11"
 
-# Entwickler-Werkzeuge (vorkompilierte Binaries, kein Build)
+# Developer tooling, as prebuilt binaries rather than a source build.
 cargo-binstall = "latest"
 
 [env]
-# Workspace-lokale Build-Artefakte, damit nichts ins Home-Verzeichnis leckt
+# Build artefacts stay inside the workspace, so nothing leaks into $HOME.
 CARGO_TERM_COLOR = "always"
 RUST_BACKTRACE = "1"
 
@@ -22,7 +24,7 @@ RUST_BACKTRACE = "1"
 experimental = true
 
 [tasks.setup]
-description = "Einmalige Einrichtung nach dem Klonen"
+description = "One-time setup after cloning"
 run = [
   "cargo binstall -y cargo-nextest cargo-deny",
   "pnpm --dir web install",

@@ -34,6 +34,12 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The VM walkthrough's safety guards are shell, so they need their own
+      # tests. The check that refuses to run on a machine somebody depends on
+      # was wrong the first time it ran, and nothing else would have caught it.
+      - run: ./tests/vm/lib_test.sh
+      - name: Shell scripts pass shellcheck
+        run: shellcheck -S warning tests/vm/*.sh
 
   pam-module:
     name: PAM module loads and exports its symbols

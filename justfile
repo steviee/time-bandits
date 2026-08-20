@@ -9,7 +9,7 @@ default:
 # Everything CI checks, in the order CI checks it. Run this before pushing —
 # it exists because "the tests pass" is not the same as "the pipeline is green",
 # and licensing drifted red for eight commits while the tests stayed green.
-check: fmt-check lint test licensing
+check: fmt-check lint test licensing guards
 
 fmt:
     cargo fmt --all
@@ -22,6 +22,12 @@ lint:
 
 test:
     cargo test --workspace
+
+# The VM walkthrough's safety guards. They are shell, so they get their own
+# tests: the check that refuses to run on a machine somebody depends on was
+# wrong the first time it ran.
+guards:
+    ./tests/vm/lib_test.sh
 
 # Every file needs a copyright and a licence, including the ones that cannot
 # carry a comment header — those are declared in REUSE.toml.

@@ -61,6 +61,9 @@ enum Command {
     Status {
         /// Which user; omit for everyone managed on this machine.
         user: Option<String>,
+        /// Machine-readable output, one JSON object per user.
+        #[arg(long)]
+        json: bool,
     },
     /// Time spent, broken down by application.
     Usage {
@@ -68,6 +71,9 @@ enum Command {
         /// The whole policy week instead of today.
         #[arg(long)]
         week: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
     },
     /// Show or change the rules for a user.
     #[command(subcommand)]
@@ -254,47 +260,76 @@ fn run(cli: Cli) -> Result<ExitCode> {
         return pam_command(cmd);
     }
 
-    let store = open_store(&cli)?;
+    let paths = resolve(&cli)?;
+    let store = open_store(&paths)?;
     let now = Zoned::now();
 
     match cli.command {
-        Command::Status { user } => status(&store, user.as_deref(), &now),
-        Command::Usage { user, week } => usage(&store, &user, week, &now),
+        Command::Status { user, json } => status(&store, user.as_deref(), json, &now),
+        Command::Usage { user, week, json } => usage(&store, &user, week, json, &now),
         Command::Policy(cmd) => policy_command(&store, cmd),
         Command::GrantBonus { user, amount } => grant_bonus(&store, &user, &amount, &now),
         Command::Doctor { pam_root, socket } => {
-            doctor_command(&store, &pam_root, socket.as_deref())
+            doctor_command(&store, &paths, &pam_root, socket.as_deref())
         }
         Command::Pam(_) => unreachable!("handled above"),
     }
 }
 
-fn open_store(cli: &Cli) -> Result<Store> {
-    let cfg = if cli.database.is_some() && cli.policy_dir.is_some() {
-        None
-    } else {
-        Some(
-            Config::load(&cli.config)
-                .with_context(|| format!("reading {}", cli.config.display()))?,
-        )
-    };
-    let path = match (&cli.database, &cfg) {
-        (Some(p), _) => p.clone(),
-        (None, Some(c)) => c.database_path(),
-        (None, None) => unreachable!("the configuration was read"),
-    };
-    let policy_dir = match (&cli.policy_dir, &cfg) {
-        (Some(p), _) => p.clone(),
-        (None, Some(c)) => c.policy_dir.clone(),
-        (None, None) => unreachable!("the configuration was read"),
-    };
-    if !path.exists() {
+/// Where this invocation reads and writes, after the command line has had its
+/// say over the configuration file.
+struct Paths {
+    database: PathBuf,
+    policy_dir: PathBuf,
+    managed_group: String,
+}
+
+fn resolve(cli: &Cli) -> Result<Paths> {
+    let cfg =
+        Config::load(&cli.config).with_context(|| format!("reading {}", cli.config.display()))?;
+    Ok(Paths {
+        database: cli.database.clone().unwrap_or_else(|| cfg.database_path()),
+        policy_dir: cli.policy_dir.clone().unwrap_or(cfg.policy_dir),
+        managed_group: cfg.managed_group.unwrap_or_else(|| "kids".to_owned()),
+    })
+}
+
+fn open_store(paths: &Paths) -> Result<Store> {
+    if !paths.database.exists() {
         bail!(
             "no database at {} — has timebanditsd ever run?",
-            path.display()
+            paths.database.display()
         );
     }
-    Store::open(&path, policy_dir).with_context(|| format!("opening {}", path.display()))
+    Store::open(&paths.database, &paths.policy_dir)
+        .with_context(|| format!("opening {}", paths.database.display()))
+}
+
+/// The same facts the human report is built from, in a shape a script can read.
+///
+/// Exists because scraping the prose is the kind of check that silently
+/// succeeds against the wrong number. `null` means unlimited throughout —
+/// never zero, which is the opposite.
+fn status_json(
+    policy: &Policy,
+    snapshot: &tb_core::engine::UsageSnapshot,
+    verdict: &tb_core::Verdict,
+    day: tb_core::schedule::PolicyDay,
+) -> serde_json::Value {
+    let denial = verdict.denial();
+    serde_json::json!({
+        "subject": policy.subject,
+        "policy_day": day.date.to_string(),
+        "timezone": policy.timezone,
+        "enforcement": policy.enforcement,
+        "used_today_secs": snapshot.used_today.as_secs(),
+        "used_week_secs": snapshot.used_this_week.as_secs(),
+        "bonus_today_secs": snapshot.bonus_today.as_secs(),
+        "allowed": verdict.is_allowed(),
+        "remaining_secs": verdict.remaining().map(tb_core::DurationSpec::as_secs),
+        "deny_reason": denial.map(|d| d.reason.message_key()),
+        "retry_at": denial.and_then(|d| d.retry_at.as_ref()).map(ToString::to_string),
+    })
 }
 
 fn subjects_or(store: &Store, user: Option<&str>) -> Result<Vec<String>> {
@@ -310,22 +345,31 @@ fn load_policy(store: &Store, user: &str) -> Result<Policy> {
         .with_context(|| format!("no policy for `{user}`"))
 }
 
-fn status(store: &Store, user: Option<&str>, now: &Zoned) -> Result<ExitCode> {
+fn status(store: &Store, user: Option<&str>, json: bool, now: &Zoned) -> Result<ExitCode> {
     let subjects = subjects_or(store, user)?;
     if subjects.is_empty() {
-        println!("no users are managed on this machine");
+        if !json {
+            println!("no users are managed on this machine");
+        }
         return Ok(ExitCode::SUCCESS);
     }
     for subject in subjects {
         let policy = load_policy(store, &subject)?;
         let (snapshot, day) = store.snapshot(&policy, now)?;
         let verdict = tb_core::evaluate(&policy, &snapshot, now);
-        print!("{}", report::status(&policy, &snapshot, &verdict, day, now));
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string(&status_json(&policy, &snapshot, &verdict, day,))?
+            );
+        } else {
+            print!("{}", report::status(&policy, &snapshot, &verdict, day, now));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
 
-fn usage(store: &Store, user: &str, week: bool, now: &Zoned) -> Result<ExitCode> {
+fn usage(store: &Store, user: &str, week: bool, json: bool, now: &Zoned) -> Result<ExitCode> {
     let policy = load_policy(store, user)?;
     let (_, day) = store.snapshot(&policy, now)?;
 
@@ -343,6 +387,26 @@ fn usage(store: &Store, user: &str, week: bool, now: &Zoned) -> Result<ExitCode>
     let segments = store.segments_between(user, start.timestamp(), now.timestamp())?;
     let totals = tb_core::usage::totals_by_app(&segments);
     let total = tb_core::usage::total(&segments);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "subject": user,
+                "period": if week { "week" } else { "day" },
+                "from": start.timestamp().to_string(),
+                "total_secs": total.as_secs(),
+                "apps": totals
+                    .iter()
+                    .map(|(app, d)| serde_json::json!({
+                        "app": app.to_string(),
+                        "secs": d.as_secs(),
+                    }))
+                    .collect::<Vec<_>>(),
+            }))?
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
 
     println!(
         "{user}: {} to now",
@@ -501,17 +565,28 @@ fn pam_command(cmd: &PamCommand) -> Result<ExitCode> {
 
 fn doctor_command(
     store: &Store,
+    paths: &Paths,
     pam_root: &std::path::Path,
     socket: Option<&std::path::Path>,
 ) -> Result<ExitCode> {
-    let policies: Vec<Policy> = store
-        .subjects()?
-        .iter()
-        .filter_map(|s| store.load_policy(s).ok().flatten())
-        .collect();
+    // A policy that will not parse must show up as a failure, not vanish from
+    // the report — a silent disappearance is how a child ends up unlimited
+    // while the report says everything is fine.
+    let mut unreadable = Vec::new();
+    let mut policies: Vec<Policy> = Vec::new();
+    for subject in store.subjects()? {
+        match store.load_policy(&subject) {
+            Ok(Some(p)) => policies.push(p),
+            Ok(None) => {}
+            Err(e) => unreadable.push(e.to_string()),
+        }
+    }
 
     let mut env = doctor::Environment {
         pam: pamconf::PamDir::new(pam_root),
+        database: paths.database.clone(),
+        disable_flag: PathBuf::from(tb_daemon::config::DISABLE_FLAG),
+        managed_group: paths.managed_group.clone(),
         ..doctor::Environment::default()
     };
     if let Some(s) = socket {
@@ -521,8 +596,16 @@ fn doctor_command(
     for check in &checks {
         println!("{check}");
     }
+    for problem in &unreadable {
+        println!("  [FAIL] {:<22} {problem}", "policy file");
+    }
 
-    Ok(match doctor::worst(&checks) {
+    let worst = if unreadable.is_empty() {
+        doctor::worst(&checks)
+    } else {
+        doctor::Level::Fail
+    };
+    Ok(match worst {
         doctor::Level::Fail => {
             println!("\nEnforcement is not working. Fix the FAIL lines above.");
             ExitCode::FAILURE

@@ -69,6 +69,8 @@ pub struct Environment {
     pub socket: PathBuf,
     pub database: PathBuf,
     pub disable_flag: PathBuf,
+    /// The group a user must be in before anything is enforced against them.
+    pub managed_group: String,
     /// Directories that might hold the PAM module, in the order to try them.
     pub module_dirs: Vec<PathBuf>,
 }
@@ -80,6 +82,7 @@ impl Default for Environment {
             socket: PathBuf::from(tb_proto::pam::SOCKET_PATH),
             database: PathBuf::from("/var/lib/timebandits/state.db"),
             disable_flag: PathBuf::from("/etc/timebandits/disable"),
+            managed_group: "kids".to_owned(),
             // Every distribution puts it somewhere else; see packaging/README.md.
             module_dirs: vec![
                 PathBuf::from("/usr/lib64/security"),
@@ -95,6 +98,17 @@ impl Default for Environment {
 /// database open.
 #[must_use]
 pub fn run(env: &Environment, policies: &[Policy]) -> Vec<Check> {
+    run_with(env, policies, &tb_daemon::users::SystemGroups)
+}
+
+/// As [`run`], with the group lookup injected so the tests never consult the
+/// machine's own passwd database.
+#[must_use]
+pub fn run_with(
+    env: &Environment,
+    policies: &[Policy],
+    groups: &dyn tb_daemon::users::Membership,
+) -> Vec<Check> {
     let mut checks = vec![
         check_disable_flag(&env.disable_flag),
         check_module(&env.module_dirs),
@@ -102,7 +116,7 @@ pub fn run(env: &Environment, policies: &[Policy]) -> Vec<Check> {
         check_database(&env.database),
     ];
     checks.extend(check_pam(&env.pam));
-    checks.extend(check_policies(policies));
+    checks.extend(check_policies(policies, &env.managed_group, groups));
     checks
 }
 
@@ -210,7 +224,11 @@ fn check_pam(pam: &PamDir) -> Vec<Check> {
     checks
 }
 
-fn check_policies(policies: &[Policy]) -> Vec<Check> {
+fn check_policies(
+    policies: &[Policy],
+    managed_group: &str,
+    groups: &dyn tb_daemon::users::Membership,
+) -> Vec<Check> {
     if policies.is_empty() {
         return vec![Check::new(
             "policies",
@@ -225,7 +243,29 @@ fn check_policies(policies: &[Policy]) -> Vec<Check> {
         if let Err(e) = p.validate() {
             checks.push(Check::new(&name, Level::Fail, e.to_string()));
         } else if p.enforcement {
-            checks.push(Check::new(&name, Level::Ok, "enforcing"));
+            // A policy is not permission. Without the group, the daemon
+            // records and nothing else — and this is the first place anybody
+            // looks when "it isn't doing anything".
+            match groups.is_member(&p.subject, managed_group) {
+                Some(true) => checks.push(Check::new(&name, Level::Ok, "enforcing")),
+                Some(false) => checks.push(Check::new(
+                    &name,
+                    Level::Fail,
+                    format!(
+                        "set to enforce, but `{}` is not in `{managed_group}` — nothing will be \
+                         limited. Run: usermod -aG {managed_group} {}",
+                        p.subject, p.subject
+                    ),
+                )),
+                None => checks.push(Check::new(
+                    &name,
+                    Level::Warn,
+                    format!(
+                        "cannot tell whether `{}` is in `{managed_group}`",
+                        p.subject
+                    ),
+                )),
+            }
         } else {
             checks.push(Check::new(
                 &name,
@@ -246,6 +286,7 @@ mod tests {
         let pam_root = dir.join("pam.d");
         fs::create_dir_all(&pam_root).unwrap();
         Environment {
+            managed_group: "kids".to_owned(),
             pam: PamDir::new(&pam_root),
             socket: dir.join("pam.sock"),
             database: dir.join("state.db"),
@@ -253,6 +294,17 @@ mod tests {
             module_dirs: vec![dir.join("security")],
         }
     }
+
+    /// A fixed answer to "is this user managed?", so the tests never touch the
+    /// machine's own passwd database.
+    #[derive(Debug)]
+    struct Groups(Option<bool>);
+    impl tb_daemon::users::Membership for Groups {
+        fn is_member(&self, _user: &str, _group: &str) -> Option<bool> {
+            self.0
+        }
+    }
+    const IN_KIDS: Groups = Groups(Some(true));
 
     fn enforcing(subject: &str) -> Policy {
         let mut p = Policy::permissive(subject);
@@ -347,7 +399,7 @@ mod tests {
     #[test]
     fn observe_only_policies_are_a_warning_not_a_pass() {
         // The most likely way to believe you are protected while you are not.
-        let checks = check_policies(&[Policy::permissive("kid")]);
+        let checks = check_policies(&[Policy::permissive("kid")], "kids", &IN_KIDS);
         assert_eq!(checks[0].level, Level::Warn);
         assert!(checks[0].detail.contains("nothing is limited"));
     }
@@ -356,7 +408,7 @@ mod tests {
     fn an_enforcing_policy_passes_and_a_broken_one_fails() {
         let mut broken = enforcing("sibling");
         broken.timezone = "Mars/Olympus_Mons".to_owned();
-        let checks = check_policies(&[enforcing("kid"), broken]);
+        let checks = check_policies(&[enforcing("kid"), broken], "kids", &IN_KIDS);
         assert_eq!(checks[0].level, Level::Ok);
         assert_eq!(checks[1].level, Level::Fail);
         assert!(checks[1].detail.contains("Mars"));
@@ -364,7 +416,7 @@ mod tests {
 
     #[test]
     fn no_managed_users_is_worth_saying() {
-        let checks = check_policies(&[]);
+        let checks = check_policies(&[], "kids", &IN_KIDS);
         assert_eq!(checks[0].level, Level::Warn);
         assert!(checks[0].detail.contains("no users are managed"));
     }
@@ -386,9 +438,29 @@ mod tests {
         }
         env.pam.enable(false).unwrap();
 
-        let checks = run(&env, &[enforcing("kid")]);
+        let checks = run_with(&env, &[enforcing("kid")], &IN_KIDS);
         let bad: Vec<&Check> = checks.iter().filter(|c| c.level != Level::Ok).collect();
         assert!(bad.is_empty(), "unexpected findings: {bad:?}");
         assert_eq!(worst(&checks), Level::Ok);
+    }
+
+    #[test]
+    fn an_enforcing_policy_without_the_group_is_the_headline_failure() {
+        // The most common "why is it not doing anything": the rules are set,
+        // the daemon is fine, and the user was never put in the group. Nothing
+        // else in this report would say so.
+        let checks = check_policies(&[enforcing("kid")], "kids", &Groups(Some(false)));
+        assert_eq!(checks[0].level, Level::Fail);
+        assert!(
+            checks[0].detail.contains("usermod -aG kids kid"),
+            "and says how to fix it: {}",
+            checks[0].detail
+        );
+    }
+
+    #[test]
+    fn a_broken_group_lookup_is_a_warning_not_a_verdict() {
+        let checks = check_policies(&[enforcing("kid")], "kids", &Groups(None));
+        assert_eq!(checks[0].level, Level::Warn);
     }
 }

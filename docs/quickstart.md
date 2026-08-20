@@ -119,6 +119,10 @@ journalctl --user -u timebandits-agent -f        # the agent
 journalctl --user -b -f | grep timebandits-focus # the KWin script
 ```
 
+To prove the whole chain rather than just get it running — including that the
+lock screen refuses the correct password — follow
+[docs/vm-test.md](vm-test.md), which walks through it with a script.
+
 Rules for a child are `/etc/timebandits/policy.d/<user>.toml`; `tbctl policy
 path <user>` prints the location. Edit the file directly if you like — the
 daemon picks it up within a few seconds.
