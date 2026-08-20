@@ -31,9 +31,16 @@ step_1_preconditions() {
     ok "PAM socket present"
     [ -e /etc/timebandits/disable ] && die "the emergency brake is set — rm /etc/timebandits/disable"
     ok "emergency brake not set"
-    ls /usr/lib*/security/pam_timebandits.so /usr/lib/*/security/pam_timebandits.so \
-        >/dev/null 2>&1 || die "PAM module not found in any security directory"
-    ok "PAM module installed"
+    # A loop, not `ls pattern1 pattern2`: with two globs, ls fails as soon as
+    # *one* of them matches nothing, even when the other found the file.
+    # Distributions disagree about the directory, so several patterns is the
+    # normal case and the check was failing on a machine that was fine.
+    found=""
+    for dir in /usr/lib64/security /usr/lib/security /usr/lib/*/security; do
+        [ -f "$dir/pam_timebandits.so" ] && { found="$dir/pam_timebandits.so"; break; }
+    done
+    [ -n "$found" ] || die "PAM module not found in any security directory"
+    ok "PAM module installed ($found)"
 }
 
 step_2_test_user() {
