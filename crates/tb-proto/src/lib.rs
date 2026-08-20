@@ -8,3 +8,4 @@
 
 pub mod agent;
 pub mod pam;
+pub mod text;

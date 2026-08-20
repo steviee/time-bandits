@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 use jiff::Zoned;
 use tb_core::engine::{Denial, DenyReason, Verdict};
 use tb_proto::pam::{Answer, Query, VERSION};
+use tb_proto::text::{Locale, Reason, RetryAt, deny_text};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -80,7 +81,11 @@ impl Responder {
                     EventKind::AccessDenied,
                     Some(&format!("{:?} via {}", denial.reason, query.service)),
                 );
-                let mut answer = Answer::deny(deny_message(&denial, now));
+                let (reason, retry) = deny_facts(&denial, now);
+                // The English text goes along as a fallback for a module older
+                // than this daemon; a current one writes its own.
+                let mut answer = Answer::deny(deny_text(reason, &retry, Locale::English))
+                    .with_reason(reason, retry);
                 if let Some(secs) = seconds_until(&denial, now) {
                     answer = answer.with_retry_in(secs);
                 }
@@ -96,32 +101,36 @@ fn seconds_until(denial: &Denial, now: &Zoned) -> Option<u64> {
     u64::try_from(now.duration_until(retry).as_secs()).ok()
 }
 
-/// The text the person at the keyboard sees.
+/// Why access was refused and when it returns, as facts rather than prose.
 ///
-/// Deliberately says *when* access returns rather than only that it is refused.
-/// "Try again at 07:00" ends the conversation; "no" invites twenty minutes of
-/// arguing with a computer.
+/// The daemon deliberately does not write the sentence. It runs as a systemd
+/// service, usually with no `LANG` and never the child's, so anything composed
+/// here arrives in the wrong language on a German desktop. What it does know,
+/// and nobody else does, is the policy's time zone — so it sends the clock
+/// reading and lets each front end write the sentence around it.
 #[must_use]
-pub fn deny_message(denial: &Denial, now: &Zoned) -> String {
-    let when = denial.retry_at.as_ref().map(|t| {
-        let same_day = t.date() == now.date();
-        if same_day {
-            format!("{:02}:{:02}", t.hour(), t.minute())
-        } else {
-            format!("{} at {:02}:{:02}", t.strftime("%A"), t.hour(), t.minute())
-        }
-    });
-
+pub fn deny_facts(denial: &Denial, now: &Zoned) -> (Reason, RetryAt) {
     let reason = match denial.reason {
-        DenyReason::DailyQuotaExhausted => "Screen time for today is used up",
-        DenyReason::WeeklyQuotaExhausted => "Screen time for this week is used up",
-        DenyReason::OutsideAllowedWindow => "Computer time is over for now",
+        DenyReason::DailyQuotaExhausted => Reason::DailyQuota,
+        DenyReason::WeeklyQuotaExhausted => Reason::WeeklyQuota,
+        DenyReason::OutsideAllowedWindow => Reason::OutsideWindow,
     };
 
-    match when {
-        Some(w) => format!("{reason}. Available again {w}."),
-        None => format!("{reason}."),
-    }
+    let retry = denial
+        .retry_at
+        .as_ref()
+        .map_or_else(RetryAt::default, |at| {
+            let days_ahead = at.date().since(now.date()).map_or(0, |s| s.get_days());
+            RetryAt {
+                clock: Some(format!("{:02}:{:02}", at.hour(), at.minute())),
+                not_today: days_ahead != 0,
+                // Beyond tomorrow a bare time is not enough to plan around, so the
+                // weekday goes along too. English here; the reader translates it.
+                weekday: (days_ahead > 1).then(|| at.strftime("%A").to_string()),
+            }
+        });
+
+    (reason, retry)
 }
 
 /// Binds the socket, replacing a stale one left by an unclean shutdown.
@@ -339,8 +348,51 @@ mod tests {
         );
         assert_eq!(a.decision, Decision::Deny);
         let msg = a.message.expect("a message");
-        assert!(msg.contains("Thursday"), "next window is tomorrow: {msg:?}");
-        assert!(msg.contains("15:00"), "got {msg:?}");
+        // Tomorrow is said as "tomorrow", not by name — a weekday is only
+        // informative once it is further out than that.
+        assert!(msg.contains("tomorrow at 15:00"), "got {msg:?}");
+        assert_eq!(a.retry.clock.as_deref(), Some("15:00"));
+        assert!(a.retry.not_today);
+        assert_eq!(a.retry.weekday, None, "tomorrow needs no name");
+    }
+
+    #[test]
+    fn a_refusal_further_out_than_tomorrow_names_the_day() {
+        // A bare clock reading is not enough to plan around once it is days
+        // away, so the weekday goes along — in English, for the reader to
+        // translate.
+        let mut p = policy_2h();
+        // Days left open on purpose: with a daily limit as well, that one is
+        // checked first and the refusal would point at tomorrow instead.
+        p.daily_quota = tb_core::schedule::WeekSchedule::uniform(Quota::Unlimited);
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(1));
+        let start = at(2026, 8, 19, 15, 0);
+        let store = Store::in_memory().unwrap();
+        store.save_policy(&p).unwrap();
+        let s = start.timestamp();
+        store
+            .insert_segment(&UsageSegment {
+                id: Uuid::now_v7(),
+                subject: "kid".to_owned(),
+                app: tb_core::AppId::unknown(),
+                source: tb_core::AppIdSource::Unknown,
+                start: s,
+                end: s.checked_add(jiff::SignedDuration::from_hours(2)).unwrap(),
+                title: None,
+            })
+            .unwrap();
+        let r = Responder::new(Arc::new(Mutex::new(store)));
+
+        // Wednesday the 19th; the week reopens on Monday the 24th.
+        let a = r.answer(
+            &Query::new("kid", "sddm", Phase::Account),
+            &at(2026, 8, 19, 18, 0),
+        );
+        assert_eq!(a.decision, Decision::Deny);
+        assert_eq!(a.retry.weekday.as_deref(), Some("Monday"));
+        assert!(a.retry.not_today);
+        let msg = a.message.expect("a message");
+        assert!(msg.contains("Monday 04:00"), "got {msg:?}");
     }
 
     #[test]

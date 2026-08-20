@@ -105,6 +105,26 @@ pub trait Environment {
     fn log(&self, _message: &str) {}
 }
 
+/// The sentence to put on the lock screen.
+///
+/// Composed here rather than taken from the daemon, because the locale that
+/// matters is the one of the process being authenticated — the child's session
+/// for an unlock, the greeter's for a login. The daemon has neither.
+///
+/// The daemon's English text is the fallback for the reverse version skew: a
+/// module newer than the daemon gets no `reason` and uses what it was sent.
+fn refusal_text(answer: &Answer) -> String {
+    match answer.reason {
+        Some(reason) => {
+            tb_proto::text::deny_text(reason, &answer.retry, tb_proto::text::Locale::from_env())
+        }
+        None => answer
+            .message
+            .clone()
+            .unwrap_or_else(|| "Screen time limit reached.".to_owned()),
+    }
+}
+
 /// The decision.
 ///
 /// Note what is missing: there is no outcome that *grants* access. The module is
@@ -134,11 +154,7 @@ pub fn decide(
     match env.ask(&query) {
         Ok(answer) => match answer.decision {
             Decision::Allow | Decision::Ignore => Outcome::Ignore,
-            Decision::Deny => Outcome::Deny(
-                answer
-                    .message
-                    .unwrap_or_else(|| "Screen time limit reached.".to_owned()),
-            ),
+            Decision::Deny => Outcome::Deny(refusal_text(&answer)),
         },
         Err(err) => {
             env.log(&format!("{err}; applying fallback"));
@@ -146,9 +162,11 @@ pub fn decide(
             //    for everyone else an unreachable daemon is none of our business.
             let managed = env.user_in_group(user, &cfg.managed_group) == Some(true);
             match (managed, cfg.fallback) {
-                (true, Fallback::Deny) => Outcome::Deny(
-                    "Screen time service is unavailable. Please ask a parent.".to_owned(),
-                ),
+                (true, Fallback::Deny) => Outcome::Deny(tb_proto::text::deny_text(
+                    tb_proto::text::Reason::ServiceUnavailable,
+                    &tb_proto::text::RetryAt::default(),
+                    tb_proto::text::Locale::from_env(),
+                )),
                 _ => Outcome::Ignore,
             }
         }
@@ -337,6 +355,46 @@ mod tests {
         assert_eq!(asked[0].service, "kde");
         assert_eq!(asked[0].phase, Phase::Auth);
         assert_eq!(asked[0].user, "kid");
+    }
+
+    #[test]
+    fn the_refusal_is_written_in_the_login_locale_not_the_daemons() {
+        // The daemon sends English facts; the module turns them into the
+        // language of the session being unlocked.
+        let answer = Answer::deny("Screen time for today is used up.").with_reason(
+            tb_proto::text::Reason::DailyQuota,
+            tb_proto::text::RetryAt {
+                clock: Some("07:00".to_owned()),
+                not_today: true,
+                weekday: None,
+            },
+        );
+
+        // SAFETY-free: set_var is unsafe in the 2024 edition because it races
+        // with other threads reading the environment. This test is
+        // single-threaded by construction and restores what it changed.
+        let previous = std::env::var("LC_ALL").ok();
+        unsafe { std::env::set_var("LC_ALL", "de_DE.UTF-8") };
+        let german = refusal_text(&answer);
+        unsafe { std::env::set_var("LC_ALL", "en_GB.UTF-8") };
+        let english = refusal_text(&answer);
+        match previous {
+            Some(v) => unsafe { std::env::set_var("LC_ALL", v) },
+            None => unsafe { std::env::remove_var("LC_ALL") },
+        }
+
+        assert!(german.contains("Bildschirmzeit"), "{german}");
+        assert!(german.contains("morgen um 07:00"), "{german}");
+        assert!(english.contains("Screen time"), "{english}");
+        assert!(english.contains("tomorrow at 07:00"), "{english}");
+    }
+
+    #[test]
+    fn a_daemon_older_than_the_module_still_gets_its_text_shown() {
+        // Reverse version skew: no structured reason, so the sentence the
+        // daemon wrote is used rather than nothing being said.
+        let answer = Answer::deny("Some older wording.");
+        assert_eq!(refusal_text(&answer), "Some older wording.");
     }
 
     #[test]

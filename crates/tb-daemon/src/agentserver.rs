@@ -188,7 +188,14 @@ impl Receiver {
             Verdict::Denied(d) => {
                 state.blocked = true;
                 state.remaining_secs = Some(0);
-                state.message = Some(crate::pamserver::deny_message(&d, now));
+                let (reason, retry) = crate::pamserver::deny_facts(&d, now);
+                state.message = Some(tb_proto::text::deny_text(
+                    reason,
+                    &retry,
+                    tb_proto::text::Locale::English,
+                ));
+                state.reason = Some(reason);
+                state.retry = retry;
             }
         }
         state

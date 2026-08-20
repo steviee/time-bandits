@@ -130,9 +130,16 @@ pub struct State {
     /// Currently blocked.
     #[serde(default)]
     pub blocked: bool,
-    /// Text to show the child, already localised by the daemon.
+    /// English text, for a front end that cannot localise. A current one
+    /// composes its own from `reason` and `retry`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Why access was refused, for the front end to put into words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::text::Reason>,
+    /// When it returns, as facts.
+    #[serde(default, skip_serializing_if = "crate::text::RetryAt::is_empty")]
+    pub retry: crate::text::RetryAt,
     /// Whether the daemon wants window titles. The agent must not send them
     /// otherwise — collection is opt-in, and the decision belongs to the parent.
     #[serde(default)]
@@ -159,6 +166,8 @@ impl State {
             remaining_secs: None,
             blocked: false,
             message: None,
+            reason: None,
+            retry: crate::text::RetryAt::default(),
             record_titles: false,
             used_today_secs: 0,
             warn_at_secs: Vec::new(),

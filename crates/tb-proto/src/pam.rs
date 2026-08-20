@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::text::RetryAt;
+
 /// Where the daemon listens for PAM queries.
 pub const SOCKET_PATH: &str = "/run/timebandits/pam.sock";
 
@@ -82,11 +84,19 @@ pub enum Decision {
 pub struct Answer {
     pub v: u32,
     pub decision: Decision,
-    /// Text shown to the person at the keyboard. Already localized by the
-    /// daemon, which knows the configured locale; the module does no formatting.
+    /// English text, kept for a module older than the daemon. A current module
+    /// composes its own sentence from `reason` and `retry` in the locale it can
+    /// see, which the daemon cannot — it runs as a systemd service, usually
+    /// with no `LANG` at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    /// Seconds until access is expected back, for a "try again at" hint.
+    /// Why access was refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<crate::text::Reason>,
+    /// When it returns, as facts.
+    #[serde(default, skip_serializing_if = "RetryAt::is_empty")]
+    pub retry: RetryAt,
+    /// Seconds until access is expected back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_in_secs: Option<u64>,
 }
@@ -98,6 +108,8 @@ impl Answer {
             v: VERSION,
             decision: Decision::Allow,
             message: None,
+            reason: None,
+            retry: RetryAt::default(),
             retry_in_secs: None,
         }
     }
@@ -108,6 +120,8 @@ impl Answer {
             v: VERSION,
             decision: Decision::Ignore,
             message: None,
+            reason: None,
+            retry: RetryAt::default(),
             retry_in_secs: None,
         }
     }
@@ -118,8 +132,18 @@ impl Answer {
             v: VERSION,
             decision: Decision::Deny,
             message: Some(message.into()),
+            reason: None,
+            retry: RetryAt::default(),
             retry_in_secs: None,
         }
+    }
+
+    /// Attaches the facts a front end needs to write its own sentence.
+    #[must_use]
+    pub fn with_reason(mut self, reason: crate::text::Reason, retry: RetryAt) -> Self {
+        self.reason = Some(reason);
+        self.retry = retry;
+        self
     }
 
     #[must_use]
