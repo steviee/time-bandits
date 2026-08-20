@@ -173,7 +173,7 @@ impl Receiver {
             warn_at_secs: policy
                 .sorted_warnings()
                 .iter()
-                .map(DurationSpec::as_secs)
+                .map(|w| w.as_secs())
                 .collect(),
             ..State::unmanaged(subject)
         };
