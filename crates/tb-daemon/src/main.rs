@@ -56,7 +56,7 @@ fn main() -> anyhow::Result<()> {
         .with_context(|| format!("creating {}", cfg.state_dir.display()))?;
     let db = cfg.database_path();
     let store = Arc::new(Mutex::new(
-        Store::open(&db).with_context(|| format!("opening {}", db.display()))?,
+        Store::open(&db, &cfg.policy_dir).with_context(|| format!("opening {}", db.display()))?,
     ));
     tracing::info!(database = %db.display(), "state loaded");
 

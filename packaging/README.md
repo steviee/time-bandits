@@ -31,9 +31,15 @@ package and goes missing from the Debian one.
 $PAMDIR/pam_timebandits.so          # differs per distribution, see below
 /usr/lib/systemd/system/timebanditsd.service
 /etc/timebandits/daemon.toml        # config, never replaced on upgrade
+/etc/timebandits/policy.d/          # one TOML file per child; shipped empty
 /var/lib/timebandits/               # created by systemd's StateDirectory=
 /run/timebandits/                   # created by systemd's RuntimeDirectory=
 ```
+
+The rules a household has set live in `policy.d` and are written by the
+administrator, not by the package, so no packaging format lists them as
+config files — each one leaves files it never installed alone. The directory
+itself is owned by the package so it exists on a fresh installation.
 
 ## The PAM module path differs everywhere
 

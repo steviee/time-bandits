@@ -23,6 +23,9 @@ StateDirectory=timebandits
 StateDirectoryMode=0700
 RuntimeDirectory=timebandits
 RuntimeDirectoryMode=0755
+# ProtectSystem=strict below makes everything read-only, so this is also what
+# keeps /etc/timebandits/policy.d writable — the daemon has to be able to store
+# a policy the household server sends it.
 ConfigurationDirectory=timebandits
 
 # The daemon runs as root because it serves a socket in /run, controls logind,

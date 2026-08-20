@@ -47,6 +47,10 @@ struct Cli {
     #[arg(long, global = true)]
     database: Option<PathBuf>,
 
+    /// Read rules from this directory instead of the configured one.
+    #[arg(long, global = true)]
+    policy_dir: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -98,6 +102,15 @@ enum PolicyCommand {
         user: String,
         #[command(flatten)]
         edit: EditArgs,
+    },
+    /// Print the file a user's rules live in.
+    Path { user: String },
+    /// Stop managing a user, deleting their rules. Usage is kept.
+    Remove {
+        user: String,
+        /// Required, so this cannot happen by a slip of the shell.
+        #[arg(long)]
+        yes: bool,
     },
     /// Write a user's rules to a TOML file.
     Export {
@@ -257,11 +270,23 @@ fn run(cli: Cli) -> Result<ExitCode> {
 }
 
 fn open_store(cli: &Cli) -> Result<Store> {
-    let path = match &cli.database {
-        Some(p) => p.clone(),
-        None => Config::load(&cli.config)
-            .with_context(|| format!("reading {}", cli.config.display()))?
-            .database_path(),
+    let cfg = if cli.database.is_some() && cli.policy_dir.is_some() {
+        None
+    } else {
+        Some(
+            Config::load(&cli.config)
+                .with_context(|| format!("reading {}", cli.config.display()))?,
+        )
+    };
+    let path = match (&cli.database, &cfg) {
+        (Some(p), _) => p.clone(),
+        (None, Some(c)) => c.database_path(),
+        (None, None) => unreachable!("the configuration was read"),
+    };
+    let policy_dir = match (&cli.policy_dir, &cfg) {
+        (Some(p), _) => p.clone(),
+        (None, Some(c)) => c.policy_dir.clone(),
+        (None, None) => unreachable!("the configuration was read"),
     };
     if !path.exists() {
         bail!(
@@ -269,7 +294,7 @@ fn open_store(cli: &Cli) -> Result<Store> {
             path.display()
         );
     }
-    Store::open(&path).with_context(|| format!("opening {}", path.display()))
+    Store::open(&path, policy_dir).with_context(|| format!("opening {}", path.display()))
 }
 
 fn subjects_or(store: &Store, user: Option<&str>) -> Result<Vec<String>> {
@@ -331,6 +356,28 @@ fn policy_command(store: &Store, cmd: PolicyCommand) -> Result<ExitCode> {
     match cmd {
         PolicyCommand::Show { user } => {
             print!("{}", report::policy(&load_policy(store, &user)?));
+            // Rules are a file, so say which one. A parent who wants something
+            // this summary cannot express can open it in an editor.
+            if let Ok(path) = store.policies().path_for(&user) {
+                println!("\nrules: {}", path.display());
+            }
+        }
+        PolicyCommand::Path { user } => {
+            let path = store.policies().path_for(&user)?;
+            println!("{}", path.display());
+            if !path.exists() {
+                bail!("`{user}` is not managed on this machine — no such file");
+            }
+        }
+        PolicyCommand::Remove { user, yes } => {
+            if !yes {
+                bail!("this deletes the rules for `{user}` — pass --yes if you mean it");
+            }
+            if store.delete_policy(&user)? {
+                println!("`{user}` is no longer managed; recorded usage is kept");
+            } else {
+                println!("`{user}` was not managed here; nothing to do");
+            }
         }
         PolicyCommand::Set { user, edit } => {
             let edit = edit.into_edit()?;

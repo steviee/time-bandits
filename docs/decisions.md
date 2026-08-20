@@ -110,6 +110,26 @@ Rust, where it is.
 
 ---
 
+## Rules are files, usage is a database
+
+Storage is split by what the data is. Rules are configuration: a handful of
+short documents a parent should be able to `cat`, edit, keep in a backup and
+still understand in three years. Usage is data: append-heavy, queried by time
+range, growing without bound. So rules live as one TOML file per child in
+`/etc/timebandits/policy.d/`, and usage lives in SQLite.
+
+They were briefly JSON blobs inside SQLite, which is the worst of both — not
+queryable as structure, not readable as configuration. An older installation
+moves its policies into files on first start.
+
+Two things fall out of the choice:
+
+- There is no cache in front of the files. A policy is under a kilobyte, so the
+  tick loop simply reads it, and a hand edit takes effect on the next pass with
+  no watcher and no reload command.
+- A hand edit counts as current. A policy arriving from the hub has to carry a
+  higher version to replace what somebody typed into the file.
+
 ## Still open
 
 **Whether a reason is required when asking for more time.** Optional is the

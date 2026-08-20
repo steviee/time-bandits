@@ -3,12 +3,16 @@
 #
 # Time Bandits daemon configuration.
 #
-# Per-user rules (quotas, time windows) are NOT set here — they live in the
-# database and are managed with tbctl or through the household server. This
-# file only covers how the daemon itself runs.
+# Per-user rules (quotas, time windows) are NOT set here. Each child has their
+# own file in policy.d/ below, which you can edit directly or manage with tbctl
+# or the household server. This file only covers how the daemon itself runs.
 
 # Where the usage database lives.
 #state_dir = "/var/lib/timebandits"
+
+# Where the rules live, one TOML file per child. The daemon re-reads them
+# within a tick, so an edit here needs no restart.
+#policy_dir = "/etc/timebandits/policy.d"
 
 # Socket the PAM module connects to. Changing this means changing the
 # `socket=` option on the pam_timebandits.so lines as well.

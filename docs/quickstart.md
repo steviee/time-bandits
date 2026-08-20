@@ -119,6 +119,10 @@ journalctl --user -u timebandits-agent -f        # the agent
 journalctl --user -b -f | grep timebandits-focus # the KWin script
 ```
 
+Rules for a child are `/etc/timebandits/policy.d/<user>.toml`; `tbctl policy
+path <user>` prints the location. Edit the file directly if you like — the
+daemon picks it up within a few seconds.
+
 **Nothing is enforced until the user is in `kids`.** A policy on its own only
 records; the group membership is what authorises locking. If `tbctl doctor`
 looks healthy and nothing ever locks, check `id -nG alice` first.

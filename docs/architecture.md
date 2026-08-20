@@ -52,6 +52,7 @@ why the same code path serves both cases.
 The only component that decides anything. It
 
 - ticks every few seconds and asks `tb-core::evaluate` for a verdict,
+- reads the rules from `/etc/timebandits/policy.d/<user>.toml`,
 - keeps usage in a local SQLite database, which stays authoritative when the hub
   is unreachable,
 - answers the PAM module over a Unix socket at `/run/timebandits/pam.sock`,
@@ -159,6 +160,34 @@ solved.
    and clock jumps end a segment at the last tick actually observed, so time the
    machine spent asleep is never credited.
 4. Segments carry a UUID, which makes syncing to the hub idempotent.
+
+## Rules are files, usage is a database
+
+Storage is split by what the data *is*, not by what is convenient:
+
+| | where | why |
+|---|---|---|
+| rules | `/etc/timebandits/policy.d/<user>.toml` | configuration — read with `cat`, changed with an editor, kept in a backup as something a person can still understand years later |
+| usage, events, bonus grants | `/var/lib/timebandits/state.db` | data — append-heavy, queried by time range, growing without bound |
+
+There is no cache in front of the files. A policy is under a kilobyte and the
+tick loop reads it every few seconds, which costs nothing and removes a class of
+bug: an edit takes effect on the next tick, with no watcher, no reload command,
+and no way for the daemon to act on a rule that is no longer written down.
+
+Two consequences worth stating:
+
+- **A file the daemon cannot parse is refused, not ignored.** Both outcomes mean
+  no rules apply, but only one of them is quiet about it, and a typo that
+  silently switches a child's limits off is exactly the failure this project
+  exists to avoid. The daemon logs the file and the parse error.
+- **A hand edit counts as current.** Somebody who opened the file and typed into
+  it meant it, so a policy arriving from the hub has to carry a higher `version`
+  to replace it.
+
+Policies used to live as JSON blobs in the database — neither queryable as
+structure nor readable as configuration. An installation from before the change
+moves them into files on first start and leaves the old table in place.
 
 ## The policy day
 

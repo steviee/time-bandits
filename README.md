@@ -78,7 +78,8 @@ Linux tool in this space does — leaves that door open.
 │ child's PC                                                        │
 │                                                                   │
 │  root   timebanditsd ──── system D-Bus ──── tbctl                 │
-│           ├── local SQLite (source of truth when offline)         │
+│           ├── rules  /etc/timebandits/policy.d/<user>.toml        │
+│           ├── usage  local SQLite (authoritative when offline)    │
 │           ├── logind: lock / terminate session                    │
 │           └── unix socket ◀── pam_timebandits.so                  │
 │                                 in sddm, kde (lock screen), login │
@@ -228,7 +229,38 @@ child ends up with no limits and nobody notices.
 
 ### Per-user rules
 
-Rules live in the database, one policy per user:
+Rules are a file per child in `/etc/timebandits/policy.d/`, because they are
+configuration a parent should be able to read without a tool:
+
+```toml
+# /etc/timebandits/policy.d/alice.toml
+version = 2
+subject = "alice"
+enforcement = true
+timezone = "Europe/Berlin"
+day_start = "04:00:00"
+weekly_quota = "unlimited"
+warnings = ["15m", "5m", "1m"]
+on_exhausted = "lock"
+record_window_titles = false
+
+[daily_quota]
+default = "2h"
+saturday = "3h"
+
+[allowed_windows]
+default = [{ from = "15:00", to = "20:00" }]
+```
+
+Edit it with any editor — the daemon re-reads it within a few seconds, so there
+is nothing to restart and no reload command to remember. A file it cannot parse
+is **refused, not ignored**: both would mean no rules apply, but a typo that
+quietly switches a child's limits off is the failure this project exists to
+avoid. Usage, events and bonus grants stay in SQLite, where append-heavy data
+queried by time range belongs.
+
+| Field | Meaning |
+|---|---|
 
 | Field | Meaning |
 |---|---|
@@ -252,7 +284,9 @@ Rules are managed with `tbctl`:
 tbctl policy show alice
 tbctl policy set alice --daily 90m --window 'sat=09:00-12:00'
 tbctl policy set alice --enforcement false        # back to observing only
-tbctl policy export alice --output alice.toml     # review, edit, re-import
+tbctl policy path alice                           # where the file is
+tbctl policy remove alice --yes                   # stop managing; usage is kept
+tbctl policy export alice --output alice.toml     # hand rules to another machine
 tbctl grant-bonus alice 30m                       # takes effect within seconds
 tbctl status                                      # everyone, at a glance
 tbctl usage alice --week
@@ -262,7 +296,8 @@ Changes take effect within one tick. The daemon re-reads the policy and any
 bonus grants on every pass, so a child locked out a moment ago is back in a few
 seconds later without anything being restarted.
 
-`tbctl` needs root, because it reads and writes the daemon's database directly.
+`tbctl` needs root, because it reads and writes the rules and the database
+directly.
 The D-Bus interface that will let a parent do this without `sudo`, gated by
 polkit, comes with the session agent.
 

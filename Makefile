@@ -97,6 +97,9 @@ install-pam:
 install-config:
 	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
 		$(DESTDIR)$(SYSCONFDIR)/timebandits/daemon.toml
+	# One TOML file per child lands here. Shipped empty: which children exist
+	# is a decision for the household, not for the package.
+	$(INSTALL) -d -m0755 $(DESTDIR)$(SYSCONFDIR)/timebandits/policy.d
 
 PO_DOMAIN       = plasma_applet_$(PLASMOID_ID)
 LOCALEDIR      ?= $(DATADIR)/locale

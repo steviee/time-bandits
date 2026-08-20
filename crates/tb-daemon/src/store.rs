@@ -12,7 +12,7 @@
 //! system SQLite keeps the package acceptable to distributions, which do not
 //! allow bundled copies of libraries.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use jiff::{Timestamp, Zoned};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -22,6 +22,8 @@ use tb_core::engine::UsageSnapshot;
 use tb_core::policy::Policy;
 use tb_core::schedule::{PolicyDay, policy_day, policy_day_end};
 use tb_core::usage::UsageSegment;
+
+use crate::policystore::{PolicyStore, PolicyStoreError};
 use uuid::Uuid;
 
 /// Bumped whenever the schema changes; migrations run on open.
@@ -31,6 +33,8 @@ const SCHEMA_VERSION: i64 = 1;
 pub enum StoreError {
     #[error("database error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Policy(#[from] PolicyStoreError),
     #[error("stored policy for `{subject}` is unreadable: {source}")]
     CorruptPolicy {
         subject: String,
@@ -73,30 +77,58 @@ impl EventKind {
 
 /// The on-disk state of one machine.
 #[derive(Debug)]
+/// The daemon's persistence, which is deliberately two things.
+///
+/// Rules are configuration and live as TOML files a parent can read and edit;
+/// usage is append-heavy data queried by time range and lives in SQLite. Both
+/// are reached through here so callers do not have to care which is which.
 pub struct Store {
     conn: Connection,
+    policies: PolicyStore,
+    /// Kept alive so a test's policy directory outlives the store.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "held only for its Drop")]
+    scratch: Option<tempfile::TempDir>,
 }
 
 impl Store {
-    /// Opens (and if necessary creates) the database at `path`.
-    pub fn open(path: &Path) -> Result<Self, StoreError> {
+    /// Opens (and if necessary creates) the database at `path`, with policies
+    /// read from `policy_dir`.
+    pub fn open(path: &Path, policy_dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        Self::init(conn, PolicyStore::new(policy_dir))
     }
 
-    /// An in-memory database, for tests.
+    /// An in-memory database with a throwaway policy directory, for tests.
+    #[cfg(test)]
     pub fn in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+        let scratch = tempfile::tempdir().expect("temp dir");
+        let policies = PolicyStore::new(scratch.path().join("policy.d"));
+        let mut store = Self::init(Connection::open_in_memory()?, policies)?;
+        store.scratch = Some(scratch);
+        Ok(store)
     }
 
-    fn init(conn: Connection) -> Result<Self, StoreError> {
+    /// The policy files behind this store.
+    #[must_use]
+    pub fn policies(&self) -> &PolicyStore {
+        &self.policies
+    }
+
+    fn init(conn: Connection, policies: PolicyStore) -> Result<Self, StoreError> {
         // WAL survives an unclean shutdown without losing committed writes, and
         // lets a reader (tbctl, the D-Bus API) run while the tick loop writes.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        let mut store = Self { conn };
+        let mut store = Self {
+            conn,
+            policies,
+            #[cfg(test)]
+            scratch: None,
+        };
         store.migrate()?;
+        store.adopt_policies_from_database()?;
         Ok(store)
     }
 
@@ -117,13 +149,6 @@ impl Store {
 
         self.conn.execute_batch(
             r"
-            CREATE TABLE IF NOT EXISTS policy (
-                subject     TEXT PRIMARY KEY,
-                version     INTEGER NOT NULL,
-                json        TEXT NOT NULL,
-                updated_at  INTEGER NOT NULL
-            );
-
             CREATE TABLE IF NOT EXISTS usage_segment (
                 id        BLOB PRIMARY KEY,
                 subject   TEXT NOT NULL,
@@ -173,54 +198,78 @@ impl Store {
     /// Returns whether it was actually written. Out-of-order delivery from the
     /// hub is normal after a reconnect, and quietly regressing to a stale policy
     /// would hand back time a parent already took away.
+    ///
+    /// A hand-edited file counts as current. Somebody who opened the file and
+    /// typed into it meant it, so an incoming policy has to be newer than what
+    /// is on disk to replace it.
     pub fn save_policy(&self, policy: &Policy) -> Result<bool, StoreError> {
-        let json = serde_json::to_string(policy).map_err(|source| StoreError::CorruptPolicy {
-            subject: policy.subject.clone(),
-            source,
-        })?;
-        let changed = self.conn.execute(
-            "INSERT INTO policy (subject, version, json, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(subject) DO UPDATE SET
-                 version    = excluded.version,
-                 json       = excluded.json,
-                 updated_at = excluded.updated_at
-             WHERE excluded.version > policy.version",
-            params![
-                policy.subject,
-                i64::try_from(policy.version).unwrap_or(i64::MAX),
-                json,
-                Timestamp::now().as_second()
-            ],
-        )?;
-        Ok(changed > 0)
+        if let Some(existing) = self.policies.load(&policy.subject)?
+            && existing.version >= policy.version
+        {
+            return Ok(false);
+        }
+        self.policies.save(policy)?;
+        Ok(true)
     }
 
     pub fn load_policy(&self, subject: &str) -> Result<Option<Policy>, StoreError> {
-        let json: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT json FROM policy WHERE subject = ?1",
-                params![subject],
-                |r| r.get(0),
-            )
-            .optional()?;
-        json.map(|j| {
-            serde_json::from_str(&j).map_err(|source| StoreError::CorruptPolicy {
-                subject: subject.to_owned(),
-                source,
-            })
-        })
-        .transpose()
+        Ok(self.policies.load(subject)?)
     }
 
     /// Every user a policy exists for.
     pub fn subjects(&self) -> Result<Vec<String>, StoreError> {
-        let mut stmt = self
+        Ok(self.policies.subjects()?)
+    }
+
+    /// Removes a user's rules.
+    pub fn delete_policy(&self, subject: &str) -> Result<bool, StoreError> {
+        Ok(self.policies.remove(subject)?)
+    }
+
+    /// Moves policies out of an older installation's database into files.
+    ///
+    /// Policies used to be JSON blobs in a `policy` table, which was neither
+    /// queryable as structure nor readable as configuration. This runs once on
+    /// startup and leaves the table in place: an upgrade that a parent has to
+    /// notice, or that loses a child's limits on the way, is not an upgrade.
+    fn adopt_policies_from_database(&self) -> Result<(), StoreError> {
+        let table_exists: bool = self
             .conn
-            .prepare("SELECT subject FROM policy ORDER BY subject")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        Ok(rows.collect::<Result<_, _>>()?)
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'policy'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !table_exists {
+            return Ok(());
+        }
+
+        let mut stmt = self.conn.prepare("SELECT subject, json FROM policy")?;
+        let rows: Vec<(String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+
+        for (subject, json) in rows {
+            // A file that already exists is what the administrator is looking
+            // at, and must win over the database it was migrated from.
+            if self.policies.load(&subject).is_ok_and(|p| p.is_some()) {
+                continue;
+            }
+            let policy: Policy =
+                serde_json::from_str(&json).map_err(|source| StoreError::CorruptPolicy {
+                    subject: subject.clone(),
+                    source,
+                })?;
+            self.policies.save(&policy)?;
+            tracing::info!(
+                user = %subject,
+                path = %self.policies.path_for(&subject).unwrap_or_default().display(),
+                "moved policy out of the database into a file you can read and edit"
+            );
+        }
+        Ok(())
     }
 
     // --- usage -------------------------------------------------------------
@@ -510,15 +559,107 @@ mod tests {
         );
     }
 
+    /// A `policy` table as it looked before rules moved into files.
+    fn legacy_policy_row(store: &Store, policy: &Policy) {
+        store
+            .conn
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS policy (
+                     subject     TEXT PRIMARY KEY,
+                     version     INTEGER NOT NULL,
+                     json        TEXT NOT NULL,
+                     updated_at  INTEGER NOT NULL
+                 );",
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO policy (subject, version, json, updated_at) VALUES (?1, ?2, ?3, 0)",
+                rusqlite::params![
+                    policy.subject,
+                    i64::try_from(policy.version).unwrap_or(i64::MAX),
+                    serde_json::to_string(policy).unwrap()
+                ],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_fresh_installation_has_no_policy_table() {
+        // Rules live in files now; a table nothing writes to is just a place
+        // for a future reader to look in the wrong direction.
+        let s = Store::in_memory().unwrap();
+        let exists: Option<i64> = s
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'policy'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(exists, None);
+    }
+
+    #[test]
+    fn policies_from_an_older_installation_become_files() {
+        // Policies used to be JSON blobs in the database. An upgrade that
+        // loses a child's limits on the way is not an upgrade.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let policies = dir.path().join("policy.d");
+        {
+            let s = Store::open(&path, &policies).unwrap();
+            legacy_policy_row(&s, &policy_2h());
+        }
+
+        let s = Store::open(&path, &policies).unwrap();
+        assert_eq!(s.load_policy("kid").unwrap(), Some(policy_2h()));
+        assert!(
+            policies.join("kid.toml").exists(),
+            "and as something a parent can read"
+        );
+    }
+
+    #[test]
+    fn a_file_wins_over_the_database_it_was_migrated_from() {
+        // Otherwise a stale row would undo every edit made since the upgrade,
+        // on every single start.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let policies = dir.path().join("policy.d");
+        {
+            let s = Store::open(&path, &policies).unwrap();
+            legacy_policy_row(&s, &policy_2h());
+            let mut edited = policy_2h();
+            edited.version = 2;
+            edited.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
+            s.policies().save(&edited).unwrap();
+        }
+
+        let s = Store::open(&path, &policies).unwrap();
+        assert_eq!(
+            *s.load_policy("kid")
+                .unwrap()
+                .unwrap()
+                .daily_quota
+                .get(tb_core::Day::Monday),
+            Quota::Unlimited,
+            "the file is what the administrator is looking at"
+        );
+    }
+
     #[test]
     fn opening_twice_does_not_re_run_migrations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.db");
+        let policies = dir.path().join("policy.d");
         {
-            let s = Store::open(&path).unwrap();
+            let s = Store::open(&path, &policies).unwrap();
             s.save_policy(&policy_2h()).unwrap();
         }
-        let s = Store::open(&path).unwrap();
+        let s = Store::open(&path, &policies).unwrap();
         assert_eq!(s.subjects().unwrap(), vec!["kid".to_owned()]);
     }
 
@@ -747,7 +888,7 @@ mod tests {
                 .unwrap();
         }
         assert!(matches!(
-            Store::open(&path),
+            Store::open(&path, dir.path().join("policy.d")),
             Err(StoreError::SchemaTooNew { .. })
         ));
     }

@@ -122,6 +122,11 @@ fi
 %{_sysusersdir}/timebandits.conf
 %dir %{_sysconfdir}/timebandits
 %config(noreplace) %{_sysconfdir}/timebandits/daemon.toml
+# The rules a household has set are configuration, and an upgrade must not
+# touch them. %ghost is wrong here: these files are created by the
+# administrator, not by the package, so the directory is owned and its
+# contents are left alone.
+%dir %{_sysconfdir}/timebandits/policy.d
 
 %changelog
 * Wed Aug 19 2026 Stephan Eberle <1726811+steviee@users.noreply.github.com> - 0.1.0-1

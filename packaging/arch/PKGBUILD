@@ -15,6 +15,8 @@ license=('GPL-3.0-or-later')
 # listed for that reason.
 depends=('pam' 'sqlite' 'gcc-libs' 'glibc')
 makedepends=('rust' 'cargo' 'make')
+# policy.d/*.toml are created by the administrator, so they are not listed
+# here; pacman leaves files it never installed alone.
 backup=('etc/timebandits/daemon.toml')
 install="${pkgname}.install"
 # Cargo's release profile carries no debug information, so makepkg's debug

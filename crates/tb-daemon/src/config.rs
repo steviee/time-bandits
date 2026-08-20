@@ -25,6 +25,14 @@ pub struct Config {
     #[serde(default = "default_state_dir")]
     pub state_dir: PathBuf,
 
+    /// Where the rules live, one TOML file per child.
+    ///
+    /// Separate from `state_dir` on purpose: these are configuration a parent
+    /// reads and edits, so they belong under `/etc` with the rest of the
+    /// machine's settings, not among the daemon's working data.
+    #[serde(default = "default_policy_dir")]
+    pub policy_dir: PathBuf,
+
     /// Unix socket the PAM module connects to. Root only.
     #[serde(default = "default_pam_socket")]
     pub pam_socket: PathBuf,
@@ -51,6 +59,9 @@ pub struct Config {
 fn default_state_dir() -> PathBuf {
     PathBuf::from(DEFAULT_STATE_DIR)
 }
+fn default_policy_dir() -> PathBuf {
+    PathBuf::from(crate::policystore::DEFAULT_DIR)
+}
 fn default_pam_socket() -> PathBuf {
     PathBuf::from(tb_proto::pam::SOCKET_PATH)
 }
@@ -65,6 +76,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             state_dir: default_state_dir(),
+            policy_dir: default_policy_dir(),
             pam_socket: default_pam_socket(),
             agent_socket: default_agent_socket(),
             tick_interval: default_tick(),
@@ -91,6 +103,12 @@ impl Config {
     #[must_use]
     pub fn database_path(&self) -> PathBuf {
         self.state_dir.join("state.db")
+    }
+
+    /// Where a user's rules are written.
+    #[must_use]
+    pub fn policies(&self) -> crate::policystore::PolicyStore {
+        crate::policystore::PolicyStore::new(&self.policy_dir)
     }
 
     /// Is the emergency brake pulled?
@@ -135,6 +153,11 @@ mod tests {
         assert_eq!(
             cfg.database_path(),
             PathBuf::from("/var/lib/timebandits/state.db")
+        );
+        assert_eq!(
+            cfg.policy_dir,
+            PathBuf::from("/etc/timebandits/policy.d"),
+            "rules are configuration and belong under /etc"
         );
     }
 }

@@ -22,6 +22,7 @@ struct Fixture {
     /// Held for its Drop: the whole fixture lives inside this directory.
     dir: tempfile::TempDir,
     db: PathBuf,
+    policy_dir: PathBuf,
     pam_root: PathBuf,
 }
 
@@ -29,7 +30,8 @@ impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let db = dir.path().join("state.db");
-        Store::open(&db).expect("create database");
+        let policy_dir = dir.path().join("policy.d");
+        Store::open(&db, &policy_dir).expect("create database");
 
         let pam_root = dir.path().join("pam.d");
         std::fs::create_dir_all(&pam_root).unwrap();
@@ -46,17 +48,24 @@ impl Fixture {
         )
         .unwrap();
 
-        Self { dir, db, pam_root }
+        Self {
+            dir,
+            db,
+            policy_dir,
+            pam_root,
+        }
     }
 
     fn store(&self) -> Store {
-        Store::open(&self.db).expect("open database")
+        Store::open(&self.db, &self.policy_dir).expect("open database")
     }
 
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tbctl"))
             .arg("--database")
             .arg(&self.db)
+            .arg("--policy-dir")
+            .arg(&self.policy_dir)
             .args(args)
             .output()
             .expect("run tbctl")
@@ -462,4 +471,67 @@ fn help_and_version_work() {
         assert!(!out.stdout.is_empty());
     }
     let _ = Path::new("");
+}
+
+#[test]
+fn rules_are_a_file_a_parent_can_find_and_read() {
+    // The whole point of moving policies out of the database.
+    let f = Fixture::new();
+    f.ok(&["policy", "set", "kid", "--daily", "2h"]);
+
+    let path = PathBuf::from(f.ok(&["policy", "path", "kid"]).trim());
+    assert!(path.ends_with("kid.toml"), "{path:?}");
+
+    let text = std::fs::read_to_string(&path).expect("readable");
+    assert!(text.contains("subject = \"kid\""), "{text}");
+    assert!(text.contains("2h"), "{text}");
+
+    // And `policy show` points at it, so nobody has to know the layout.
+    let shown = f.ok(&["policy", "show", "kid"]);
+    assert!(shown.contains(&path.display().to_string()), "{shown}");
+}
+
+#[test]
+fn editing_the_file_by_hand_is_what_the_next_command_sees() {
+    let f = Fixture::new();
+    f.ok(&["policy", "set", "kid", "--daily", "2h"]);
+    let path = f.policy_dir.join("kid.toml");
+
+    let edited = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("\"2h\"", "\"30m\"");
+    std::fs::write(&path, edited).unwrap();
+
+    let shown = f.ok(&["policy", "show", "kid"]);
+    assert!(
+        shown.contains("30 min"),
+        "no reload step in between: {shown}"
+    );
+}
+
+#[test]
+fn a_broken_file_is_refused_rather_than_read_as_no_limits() {
+    // A typo must not quietly switch a child's limits off.
+    let f = Fixture::new();
+    f.ok(&["policy", "set", "kid", "--daily", "2h"]);
+    std::fs::write(f.policy_dir.join("kid.toml"), "daily_quota = oops").unwrap();
+
+    let err = f.err(&["policy", "show", "kid"]);
+    assert!(err.contains("kid.toml"), "says which file: {err}");
+}
+
+#[test]
+fn removing_a_user_needs_saying_so_and_keeps_their_usage() {
+    let f = Fixture::new();
+    f.ok(&["policy", "set", "kid", "--daily", "2h"]);
+
+    f.err(&["policy", "remove", "kid"]);
+    assert!(
+        f.policy_dir.join("kid.toml").exists(),
+        "a slip of the shell must not unmanage a child"
+    );
+
+    let out = f.ok(&["policy", "remove", "kid", "--yes"]);
+    assert!(!f.policy_dir.join("kid.toml").exists());
+    assert!(out.contains("usage is kept"), "{out}");
 }

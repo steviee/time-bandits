@@ -12,6 +12,7 @@ pub mod agentserver;
 pub mod config;
 pub mod logind;
 pub mod pamserver;
+pub mod policystore;
 pub mod store;
 pub mod tick;
 pub mod users;
