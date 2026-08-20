@@ -22,8 +22,10 @@ use anyhow::Context as _;
 use tb_agent::client;
 use tb_agent::dbus::{AgentInterface, BUS_NAME, OBJECT_PATH};
 use tb_agent::idle::{self, IdleClock};
+use tb_agent::notify::{ACTION_MORE_TIME, Notifier, REQUEST_MINUTES};
 use tb_agent::state::{AgentState, Announcement};
 use tb_proto::agent::Report;
+use tb_proto::text::Locale;
 use tracing_subscriber::EnvFilter;
 
 /// How often the agent reports. Matches the daemon's default tick, so a report
@@ -82,15 +84,44 @@ async fn main() -> anyhow::Result<()> {
         .interface::<_, AgentInterface>(OBJECT_PATH)
         .await?;
 
+    // Desktop notifications are the one channel that does not depend on the
+    // widget being in the panel. A child may remove the widget; the warning is
+    // the part they must not lose.
+    let mut notifier = match Notifier::new(&connection).await {
+        Ok(n) => Some(n),
+        Err(e) => {
+            tracing::warn!(error = %e, "no notification service; warnings will only be logged");
+            None
+        }
+    };
+    let mut actions = match notifier.as_ref() {
+        Some(n) => n.action_stream().await.ok(),
+        None => None,
+    };
+
+    let locale = Locale::from_env();
+    // Set when the child presses the button, cleared once it has been sent.
+    let pending_request = Arc::new(Mutex::new(None::<u64>));
+
     let mut ticker = tokio::time::interval(REPORT_INTERVAL);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
             _instant = ticker.tick() => {
-                report_once(&socket, &state, &clock).await;
+                let announcement =
+                    report_once(&socket, &state, &clock, &pending_request).await;
+                deliver(&announcement, notifier.as_mut(), locale).await;
                 // One announcement per round; the widget re-reads what it shows.
                 iface.get().await.announce(iface.signal_emitter()).await;
+            }
+            Some(action) = next_action(actions.as_mut()) => {
+                if action == ACTION_MORE_TIME {
+                    tracing::info!(minutes = REQUEST_MINUTES, "the child pressed the button");
+                    if let Ok(mut pending) = pending_request.lock() {
+                        *pending = Some(REQUEST_MINUTES);
+                    }
+                }
             }
             () = shutdown_signal() => {
                 tracing::info!("shutting down");
@@ -100,12 +131,29 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-/// One exchange with the daemon, and whatever the answer calls for.
-async fn report_once(socket: &Path, state: &Arc<Mutex<AgentState>>, clock: &IdleClock) {
+/// The next pressed button, or never when there is no notification service.
+async fn next_action(stream: Option<&mut tb_agent::notify::ActionInvokedStream>) -> Option<String> {
+    use futures_util::StreamExt as _;
+    let stream = stream?;
+    let signal = stream.next().await?;
+    signal.args().ok().map(|a| a.action_key().to_string())
+}
+
+/// One exchange with the daemon.
+async fn report_once(
+    socket: &Path,
+    state: &Arc<Mutex<AgentState>>,
+    clock: &IdleClock,
+    pending_request: &Arc<Mutex<Option<u64>>>,
+) -> Announcement {
     let now = Instant::now();
+    // Taken rather than copied: a request that reaches the daemon is done, and
+    // one that does not is put back and retried on the next round.
+    let requested = pending_request.lock().ok().and_then(|mut p| p.take());
+
     let report = {
         let Ok(state) = state.lock() else {
-            return;
+            return Announcement::Nothing;
         };
         Report {
             focus: state.focus_for_report(now),
@@ -113,42 +161,52 @@ async fn report_once(socket: &Path, state: &Arc<Mutex<AgentState>>, clock: &Idle
             // The daemon cross-checks against logind, which it trusts more.
             locked: false,
             focus_tracking: state.focus_tracking(now),
+            request_minutes: requested,
             ..Report::new()
         }
     };
 
     match client::exchange(socket, &report).await {
-        Ok(answer) => {
-            let announcement = state
-                .lock()
-                .map_or(Announcement::Nothing, |mut s| s.ingest(answer));
-            deliver(&announcement);
-        }
+        Ok(answer) => state
+            .lock()
+            .map_or(Announcement::Nothing, |mut s| s.ingest(answer)),
         Err(e) => {
             // Expected while the daemon restarts. The widget shows "not
             // connected" rather than a stale countdown, because a stale
             // countdown is the one thing worse than no countdown.
             tracing::debug!(error = %e, "no answer from the daemon");
+            if let (Some(minutes), Ok(mut pending)) = (requested, pending_request.lock()) {
+                *pending = Some(minutes);
+            }
+            Announcement::Nothing
         }
     }
 }
 
 /// Puts an announcement on screen.
-///
-/// Desktop notifications are the one channel that does not depend on the widget
-/// being in the panel, which is why the warnings go here rather than only into
-/// the popup.
-fn deliver(announcement: &Announcement) {
+async fn deliver(announcement: &Announcement, notifier: Option<&mut Notifier>, locale: Locale) {
+    let Some(notifier) = notifier else {
+        if !matches!(announcement, Announcement::Nothing) {
+            tracing::info!(?announcement, "would have told the child, but cannot");
+        }
+        return;
+    };
+    // Logged as well as shown. Someone debugging an installation needs to know
+    // whether the message was sent, and a notification that has already been
+    // dismissed leaves no trace of its own.
     match announcement {
         Announcement::Nothing => {}
         Announcement::Warning { remaining_secs } => {
             tracing::info!(remaining_secs, "warning the child");
+            notifier.warn(*remaining_secs, locale).await;
         }
         Announcement::Blocked { message } => {
-            tracing::info!(message, "telling the child they are blocked");
+            tracing::info!(message, "telling the child their time is up");
+            notifier.blocked(message, locale).await;
         }
         Announcement::Restored => {
             tracing::info!("telling the child their time is back");
+            notifier.restored(locale).await;
         }
     }
 }

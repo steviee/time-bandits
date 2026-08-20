@@ -54,6 +54,8 @@ pub enum EventKind {
     ClockJump,
     /// Bonus time granted by a parent.
     BonusGranted,
+    /// The child asked for more time.
+    MoreTimeRequested,
 }
 
 impl EventKind {
@@ -64,6 +66,7 @@ impl EventKind {
             Self::Tamper => "tamper",
             Self::ClockJump => "clock_jump",
             Self::BonusGranted => "bonus_granted",
+            Self::MoreTimeRequested => "more_time_requested",
         }
     }
 }
@@ -334,17 +337,55 @@ impl Store {
 
     // --- events ------------------------------------------------------------
 
+    /// Records an event at a given instant.
+    ///
+    /// The caller supplies the time rather than the store reading a clock. Two
+    /// clocks in one decision is how a rate limit compares an event stamped
+    /// with wall-clock time against a policy evaluated at an injected one, and
+    /// silently never limits anything.
+    pub fn record_event_at(
+        &self,
+        subject: &str,
+        kind: EventKind,
+        detail: Option<&str>,
+        at: Timestamp,
+    ) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO event (subject, kind, detail, at) VALUES (?1, ?2, ?3, ?4)",
+            params![subject, kind.as_str(), detail, at.as_second()],
+        )?;
+        Ok(())
+    }
+
+    /// Records an event now. For callers with no injected clock of their own.
     pub fn record_event(
         &self,
         subject: &str,
         kind: EventKind,
         detail: Option<&str>,
     ) -> Result<(), StoreError> {
-        self.conn.execute(
-            "INSERT INTO event (subject, kind, detail, at) VALUES (?1, ?2, ?3, ?4)",
-            params![subject, kind.as_str(), detail, Timestamp::now().as_second()],
-        )?;
-        Ok(())
+        self.record_event_at(subject, kind, detail, Timestamp::now())
+    }
+
+    /// When this kind of event last happened for a user.
+    ///
+    /// Used to rate-limit: a child pressing the button ten times should reach
+    /// their parents once, not ten times.
+    pub fn last_event_at(
+        &self,
+        subject: &str,
+        kind: EventKind,
+    ) -> Result<Option<Timestamp>, StoreError> {
+        let at: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MAX(at) FROM event WHERE subject = ?1 AND kind = ?2",
+                params![subject, kind.as_str()],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(at.and_then(|s| Timestamp::from_second(s).ok()))
     }
 
     pub fn event_count(&self, subject: &str, kind: EventKind) -> Result<u64, StoreError> {
@@ -669,6 +710,31 @@ mod tests {
         assert_eq!(back[0].app.as_str(), "org.kde.konsole");
         assert_eq!(back[0].source, AppIdSource::DesktopFile);
         assert_eq!(back[0].duration(), DurationSpec::from_mins(30));
+    }
+
+    #[test]
+    fn the_last_event_time_supports_rate_limiting() {
+        let s = Store::in_memory().unwrap();
+        assert!(
+            s.last_event_at("kid", EventKind::MoreTimeRequested)
+                .unwrap()
+                .is_none()
+        );
+
+        s.record_event("kid", EventKind::MoreTimeRequested, Some("15 min"))
+            .unwrap();
+        let first = s
+            .last_event_at("kid", EventKind::MoreTimeRequested)
+            .unwrap();
+        assert!(first.is_some());
+        // Another user's asking does not reset ours.
+        s.record_event("sibling", EventKind::MoreTimeRequested, None)
+            .unwrap();
+        assert_eq!(
+            s.last_event_at("kid", EventKind::MoreTimeRequested)
+                .unwrap(),
+            first
+        );
     }
 
     #[test]

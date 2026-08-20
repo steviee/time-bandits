@@ -9,4 +9,5 @@
 pub mod client;
 pub mod dbus;
 pub mod idle;
+pub mod notify;
 pub mod state;

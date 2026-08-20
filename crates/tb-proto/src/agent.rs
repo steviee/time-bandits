@@ -93,6 +93,17 @@ pub struct Report {
     /// disabled — which is worth distinguishing from no agent at all.
     #[serde(default)]
     pub focus_tracking: bool,
+    /// The child has asked for this many more minutes.
+    ///
+    /// Rides along on the ordinary report rather than needing a channel of its
+    /// own: the agent is already talking to the daemon every few seconds, and
+    /// a request that arrives one tick later is not worse for anyone.
+    ///
+    /// It is a *request*, not a grant. Nothing here changes what the child may
+    /// do; a parent decides, and the daemon only records that the asking
+    /// happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_minutes: Option<u64>,
 }
 
 impl Report {
@@ -104,6 +115,7 @@ impl Report {
             idle_secs: 0,
             locked: false,
             focus_tracking: false,
+            request_minutes: None,
         }
     }
 }
@@ -267,6 +279,24 @@ mod tests {
                 "a report must not carry `{forbidden}`: {json}"
             );
         }
+    }
+
+    #[test]
+    fn a_request_is_a_request_and_not_a_grant() {
+        // Nothing in the report can change what the child may do. The daemon
+        // reads the number as "they asked for this much", never as an amount
+        // to add.
+        let mut r = Report::new();
+        r.request_minutes = Some(15);
+        let json = serde_json::to_string(&r).unwrap();
+        for forbidden in ["grant", "bonus", "allow", "extend"] {
+            assert!(
+                !json.contains(forbidden),
+                "a report must not carry `{forbidden}`: {json}"
+            );
+        }
+        let back: Report = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.request_minutes, Some(15));
     }
 
     #[test]

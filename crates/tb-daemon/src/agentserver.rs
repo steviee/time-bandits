@@ -28,7 +28,7 @@ use tb_proto::agent::{MAX_MESSAGE_BYTES, Report, State, VERSION};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::store::Store;
+use crate::store::{EventKind, Store};
 
 /// A report together with when it arrived.
 #[derive(Debug, Clone)]
@@ -149,12 +149,49 @@ impl Receiver {
     /// influences whose data is touched.
     #[must_use]
     pub fn accept(&self, subject: &str, report: Report, now: &Zoned) -> State {
+        if let Some(minutes) = report.request_minutes {
+            self.record_request(subject, minutes, now);
+        }
         let report = Report {
             focus: report.focus.map(tb_proto::agent::Focus::sanitized),
             ..report
         };
         self.reports.record(subject, report, now.timestamp());
         self.state_for(subject, now)
+    }
+
+    /// Notes that the child asked for more time.
+    ///
+    /// A request, never a grant: nothing a report contains can change what the
+    /// child may do. All this does is make the asking visible to a parent.
+    ///
+    /// Rate-limited, because the button is right there and a child who presses
+    /// it ten times should reach their parents once. The window is deliberately
+    /// generous — being pestered is what makes a parent stop reading the
+    /// notifications at all.
+    fn record_request(&self, subject: &str, minutes: u64, now: &Zoned) {
+        const QUIET_PERIOD: DurationSpec = DurationSpec::from_mins(10);
+
+        // A wildly large number is a broken or hostile agent, not a child.
+        let minutes = minutes.clamp(1, 8 * 60);
+
+        let Ok(store) = self.store.lock() else {
+            return;
+        };
+        if let Ok(Some(last)) = store.last_event_at(subject, EventKind::MoreTimeRequested) {
+            let since = last.duration_until(now.timestamp()).as_secs();
+            if u64::try_from(since).unwrap_or(u64::MAX) < QUIET_PERIOD.as_secs() {
+                tracing::debug!(user = subject, "request ignored, one was just made");
+                return;
+            }
+        }
+        tracing::info!(user = subject, minutes, "the child is asking for more time");
+        let _ = store.record_event_at(
+            subject,
+            EventKind::MoreTimeRequested,
+            Some(&format!("{minutes} min")),
+            now.timestamp(),
+        );
     }
 
     /// The state to hand back: how much time is left and what to tell the child.
@@ -534,6 +571,41 @@ mod tests {
         let title = stored.focus.unwrap().title.unwrap();
         assert!(!title.contains('\n'));
         assert!(title.chars().count() <= tb_proto::agent::MAX_TITLE_LEN);
+    }
+
+    #[test]
+    fn asking_for_more_time_is_recorded_once_not_once_per_press() {
+        let store = Store::in_memory().unwrap();
+        store.save_policy(&policy_2h()).unwrap();
+        let shared = Arc::new(Mutex::new(store));
+        let r = Receiver::new(shared.clone(), AgentReports::new());
+
+        let now = at(2026, 8, 19, 16, 0);
+        for _ in 0..5 {
+            let mut report = Report::new();
+            report.request_minutes = Some(15);
+            let _ = r.accept("kid", report, &now);
+        }
+        assert_eq!(
+            shared
+                .lock()
+                .unwrap()
+                .event_count("kid", EventKind::MoreTimeRequested)
+                .unwrap(),
+            1,
+            "a child leaning on the button reaches their parents once"
+        );
+    }
+
+    #[test]
+    fn a_request_never_changes_what_the_child_may_do() {
+        // The whole safety of letting an untrusted agent send this.
+        let r = receiver_with(&policy_2h(), 120, &at(2026, 8, 19, 13, 0));
+        let mut report = Report::new();
+        report.request_minutes = Some(600);
+        let state = r.accept("kid", report, &at(2026, 8, 19, 16, 0));
+        assert!(state.blocked, "asking does not unblock");
+        assert_eq!(state.remaining_secs, Some(0));
     }
 
     #[test]
