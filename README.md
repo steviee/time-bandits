@@ -26,6 +26,8 @@ tested; what is missing is missing entirely, and this table says which is which.
 | `pam_timebandits.so` — refuses login and unlock | ✅ complete, 26 tests |
 | `timebanditsd` — measures and enforces | ✅ works: tracking, logind locking, PAM socket |
 | `tbctl` — manage policies and PAM setup | ✅ complete, 65 tests including end-to-end |
+| `timebandits-agent` — focus, idle, notifications | ✅ complete |
+| KWin script, plasmoid, C++ plugin | ✅ complete, verified on a live desktop |
 | `timebandits-agent` — focus, idle, notifications | ❌ not started |
 | KWin script, plasmoid | ❌ not started |
 | `timebandits-hub` — server and web app | ❌ not started |
@@ -302,10 +304,7 @@ The full analysis, including what happens when a child kills the agent or edits
 
 Honest list of what stands between here and something a household can use:
 
-1. **No session agent**, so time is recorded but not attributed to
-   applications — everything is booked as `unknown`. This is the next thing to
-   build.
-2. **Lock state comes from logind's `LockedHint`**, which the desktop sets
+1. **Lock state comes from logind's `LockedHint`**, which the desktop sets
    voluntarily. A desktop that fails to clear it stops the clock, and the limit
    is never reached. The agent will observe lock state directly.
 3. **`tbctl` needs root.** A parent has to use `sudo`. The polkit-gated D-Bus
@@ -378,8 +377,8 @@ Contributions are welcome. Two rules matter more than the rest, and both are in
 | M1 | Tracking: daemon, local database | done |
 | M2 | Enforcement: policy engine, logind, PAM module | done |
 | M3 | `tbctl`: policies, PAM setup, diagnostics | done |
-| M4 | Session agent, KWin script, plasmoid | **next** |
-| M5 | Hub and parents' web app | |
+| M4 | Session agent, KWin script, plasmoid | done |
+| M5 | Hub and parents' web app | **next** |
 | M6 | Enrolment, mTLS, offline sync | |
 | M7 | Extra-time requests with push notifications | |
 | M8 | Per-application limits and blocklists | |

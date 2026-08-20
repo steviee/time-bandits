@@ -1,0 +1,217 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR Time Bandits contributors
+# This file is distributed under the same license as the Time Bandits package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: Time Bandits 0.1.0\n"
+"Report-Msgid-Bugs-To: https://github.com/steviee/time-bandits/issues\n"
+"POT-Creation-Date: 2026-08-20 10:04+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: plasmoid/org.timebandits.screentime/contents/ui/CompactRepresentation.qml:79
+msgid "Screen time service is not running"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/CompactRepresentation.qml:82
+msgid "Screen time is being recorded, but not limited"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/CompactRepresentation.qml:87
+#: plasmoid/org.timebandits.screentime/contents/ui/main.qml:22
+msgid "%1 left today"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:24
+msgid "unlimited"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:29
+msgid "%1 minute"
+msgid_plural "%1 minutes"
+msgstr[0] ""
+msgstr[1] ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:32
+msgid "%1 hour"
+msgid_plural "%1 hours"
+msgstr[0] ""
+msgstr[1] ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:34
+msgctxt "hours and minutes, e.g. 1 h 12 min"
+msgid "%1 h %2 min"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:42
+msgctxt "Monday, two letters"
+msgid "Mo"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:43
+msgctxt "Tuesday, two letters"
+msgid "Tu"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:44
+msgctxt "Wednesday, two letters"
+msgid "We"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:45
+msgctxt "Thursday, two letters"
+msgid "Th"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:46
+msgctxt "Friday, two letters"
+msgid "Fr"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:47
+msgctxt "Saturday, two letters"
+msgid "Sa"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/Formatting.qml:48
+msgctxt "Sunday, two letters"
+msgid "Su"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:35
+msgid "Not connected"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:36
+msgid "The screen time service is not running on this computer. Ask a parent to check it."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:48
+msgid "What's recorded about you"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:52
+msgid "Your parents can see this."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:60
+msgid "Which app is in front, and for how long"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:61
+msgid "The names, not the contents"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:62
+msgid "When you stop using the computer"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:63
+msgid "So time away doesn't count against you"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:64
+msgid "Window titles"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:66
+msgid "Currently on. Your parents switched this on."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:67
+msgid "Currently off. If your parents switch it on, this line changes."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:68
+msgid "What you type, browse, or say"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:69
+msgid "Never recorded. There is no code that could."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:70
+msgid "Screenshots, camera, microphone"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:71
+msgid "Never recorded."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:141
+msgid "Time is nearly up. Good moment to save what you're doing."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:155
+msgid "Your time is being recorded, but nothing is limited at the moment."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:174
+msgid "later"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:176
+msgid "BACK AT"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:176
+msgid "LEFT"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:184
+msgid "%1 used today"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:203
+msgid "TODAY"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:215
+msgid "Something else"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:234
+msgid "Some time can't be matched to an app right now."
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:250
+msgid "Ask for more time"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:259
+msgid "Back"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/FullRepresentation.qml:259
+msgid "What's recorded"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/main.qml:19
+msgid "Screen Time"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/main.qml:23
+msgid "Recording only"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/main.qml:24
+msgid "Service not running"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/WeekStrip.qml:47
+msgid "THIS WEEK"
+msgstr ""
+
+#: plasmoid/org.timebandits.screentime/contents/ui/WeekStrip.qml:60
+msgctxt "%1 time left in the week, %2 time per day, %3 number of days"
+msgid "%1 left this week — about %2 a day over %3 more days"
+msgstr ""

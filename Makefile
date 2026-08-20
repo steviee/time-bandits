@@ -30,12 +30,32 @@ INSTALL     ?= install
 VERSION  ?= 0.1.0
 DISTNAME  = time-bandits-$(VERSION)
 
-.PHONY: all build build-plugin install install-daemon install-pam install-config install-docs install-plasma check clean vendor dist
+.PHONY: all build build-plugin po-extract po-update install install-daemon install-pam install-config install-docs install-plasma check clean vendor dist
 
 all: build
 
 build:
 	$(CARGO) build $(CARGO_FLAGS) -p tb-daemon -p tb-pam -p tb-cli -p tb-agent
+
+# Rebuilds the message template from the QML. --no-wrap on purpose: a long
+# string split across lines is a string tools quietly fail to match.
+po-extract:
+	xgettext --from-code=UTF-8 --language=JavaScript --no-wrap \
+		--keyword=i18n:1 --keyword=i18nc:1c,2 --keyword=i18np:1,2 --keyword=i18ncp:1c,2,3 \
+		--package-name="Time Bandits" --package-version=$(VERSION) \
+		--msgid-bugs-address="https://github.com/steviee/time-bandits/issues" \
+		--copyright-holder="Time Bandits contributors" --add-comments=/// \
+		-o plasmoid/po/$(PO_DOMAIN).pot \
+		plasmoid/$(PLASMOID_ID)/contents/ui/*.qml
+
+# Folds new and changed strings into the existing translations, keeping what is
+# already translated.
+po-update: po-extract
+	@for lang in $(LANGUAGES); do \
+		msgmerge --no-wrap --update --backup=none \
+			plasmoid/po/$$lang.po plasmoid/po/$(PO_DOMAIN).pot; \
+		msgfmt --check --statistics -o /dev/null plasmoid/po/$$lang.po; \
+	done
 
 # The one component CMake builds: Plasma 6 gives QML no way to speak D-Bus, so
 # the widget needs a compiled plugin. Qt only — no KDE Frameworks, no ECM.
@@ -78,6 +98,10 @@ install-config:
 	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
 		$(DESTDIR)$(SYSCONFDIR)/timebandits/daemon.toml
 
+PO_DOMAIN       = plasma_applet_$(PLASMOID_ID)
+LOCALEDIR      ?= $(DATADIR)/locale
+LANGUAGES       = de
+
 KWIN_SCRIPT_ID  = org.timebandits.focus
 KWINSCRIPTDIR  ?= $(DATADIR)/kwin/scripts
 
@@ -86,6 +110,11 @@ install-plasma: build-plugin
 	$(INSTALL) -d $(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)
 	cp -r plasmoid/$(PLASMOID_ID)/metadata.json plasmoid/$(PLASMOID_ID)/contents \
 		$(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)/
+	@for lang in $(LANGUAGES); do \
+		$(INSTALL) -d $(DESTDIR)$(LOCALEDIR)/$$lang/LC_MESSAGES; \
+		msgfmt -o $(DESTDIR)$(LOCALEDIR)/$$lang/LC_MESSAGES/$(PO_DOMAIN).mo \
+			plasmoid/po/$$lang.po; \
+	done
 	$(INSTALL) -d $(DESTDIR)$(KWINSCRIPTDIR)/$(KWIN_SCRIPT_ID)
 	cp -r kwin-script/$(KWIN_SCRIPT_ID)/metadata.json kwin-script/$(KWIN_SCRIPT_ID)/contents \
 		$(DESTDIR)$(KWINSCRIPTDIR)/$(KWIN_SCRIPT_ID)/
