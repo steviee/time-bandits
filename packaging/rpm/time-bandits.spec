@@ -83,6 +83,7 @@ cargo test --workspace --locked --offline
     UNITDIR=%{_unitdir} \
     USERUNITDIR=%{_userunitdir} \
     SYSUSERSDIR=%{_sysusersdir} \
+    TMPFILESDIR=%{_tmpfilesdir} \
     PAMDIR=%{_libdir}/security
 
 %pre
@@ -92,6 +93,7 @@ cargo test --workspace --locked --offline
 
 %post
 %systemd_post timebanditsd.service
+%tmpfiles_create_package %{name} %{_tmpfilesdir}/timebandits.conf
 
 %preun
 %systemd_preun timebanditsd.service
@@ -120,6 +122,10 @@ fi
 %{_unitdir}/timebanditsd.service
 %{_userunitdir}/timebandits-agent.service
 %{_sysusersdir}/timebandits.conf
+%{_tmpfilesdir}/timebandits.conf
+# The same configuration again under /usr, so systemd-tmpfiles can create the
+# /etc side on a system where no scriptlet ever runs.
+%{_datadir}/factory/etc/timebandits/daemon.toml
 %dir %{_sysconfdir}/timebandits
 %config(noreplace) %{_sysconfdir}/timebandits/daemon.toml
 # The rules a household has set are configuration, and an upgrade must not

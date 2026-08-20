@@ -64,7 +64,8 @@ package() {
     PAMDIR=/usr/lib/security \
     UNITDIR=/usr/lib/systemd/system \
     USERUNITDIR=/usr/lib/systemd/user \
-    SYSUSERSDIR=/usr/lib/sysusers.d
+    SYSUSERSDIR=/usr/lib/sysusers.d \
+    TMPFILESDIR=/usr/lib/tmpfiles.d
 
   install -Dm0644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
   install -Dm0644 docs/pam-setup.md "${pkgdir}/usr/share/doc/${pkgname}/pam-setup.md"

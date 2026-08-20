@@ -94,12 +94,23 @@ install-pam:
 
 # The daemon reads its own defaults, so this file is entirely commented out.
 # It exists to document the options in a place administrators will look.
+TMPFILESDIR ?= $(PREFIX)/lib/tmpfiles.d
+FACTORYDIR  ?= $(DATADIR)/factory/etc
+
 install-config:
 	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
 		$(DESTDIR)$(SYSCONFDIR)/timebandits/daemon.toml
 	# One TOML file per child lands here. Shipped empty: which children exist
 	# is a decision for the household, not for the package.
 	$(INSTALL) -d -m0755 $(DESTDIR)$(SYSCONFDIR)/timebandits/policy.d
+	# The same two things again, under /usr, for systems where a package
+	# cannot write to /etc at install time — an image-based system has no
+	# scriptlet, and a system extension never covers /etc. systemd-tmpfiles
+	# creates them from here, and only if they are missing.
+	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
+		$(DESTDIR)$(FACTORYDIR)/timebandits/daemon.toml
+	$(INSTALL) -Dm0644 packaging/systemd/timebandits.tmpfiles.conf \
+		$(DESTDIR)$(TMPFILESDIR)/timebandits.conf
 
 PO_DOMAIN       = plasma_applet_$(PLASMOID_ID)
 LOCALEDIR      ?= $(DATADIR)/locale

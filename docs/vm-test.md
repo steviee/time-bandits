@@ -124,10 +124,13 @@ system extension instead:
 ```sh
 sudo packaging/sysext/build.sh --container   # stages in a Fedora container
 sudo packaging/sysext/install.sh timebandits.raw
-sudo systemd-sysusers                        # the groups; /etc is not in the image
 sudo systemctl enable --now timebanditsd
 sudo tbctl pam enable
 ```
+
+`install.sh` does both halves: the image covers `/usr`, and it then has
+systemd-tmpfiles and systemd-sysusers create `/etc/timebandits` and the groups,
+which a system extension can never carry.
 
 `install.sh` schedules its own undo before it merges anything and cancels it
 only once the machine has proved it can still authenticate. See

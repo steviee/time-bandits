@@ -96,14 +96,23 @@ echo "  the daemon runs"
 cancel_rollback
 systemctl daemon-reload
 
+# The /etc side, which the image cannot carry. systemd-tmpfiles reads the rules
+# the image just brought in, and `C` only copies what is missing — so an edited
+# daemon.toml survives this being run again.
+echo "creating the /etc side"
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/timebandits.conf
+systemd-sysusers
+[ -f /etc/timebandits/daemon.toml ] || fail "the configuration was not created"
+[ -d /etc/timebandits/policy.d ] || fail "the policy directory was not created"
+getent group kids >/dev/null || fail "the kids group was not created"
+echo "  /etc/timebandits and the groups are in place"
+
 cat <<NEXT
 
 Merged, and the automatic undo has been cancelled.
 
-The image is /usr only. The rest of an installation lives in /etc, which a
-system extension never covers:
+What is left is what needs a decision:
 
-    sudo systemd-sysusers                 # the kids and parents groups
     sudo systemctl enable --now timebanditsd
     sudo tbctl pam enable                 # read docs/pam-setup.md first
     sudo tbctl doctor
