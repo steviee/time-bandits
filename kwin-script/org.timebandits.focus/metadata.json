@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "1726811+steviee@users.noreply.github.com",
+                "Name": "Time Bandits contributors"
+            }
+        ],
+        "Description": "Tells the Time Bandits agent which window has focus",
+        "Description[de]": "Meldet dem Time-Bandits-Agenten, welches Fenster den Fokus hat",
+        "Icon": "preferences-system-time",
+        "Id": "org.timebandits.focus",
+        "License": "GPL-3.0-or-later",
+        "Name": "Time Bandits focus reporter",
+        "Name[de]": "Time-Bandits-Fokusmelder",
+        "Version": "0.1.0"
+    },
+    "X-Plasma-API": "javascript"
+}

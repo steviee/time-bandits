@@ -71,11 +71,17 @@ install-config:
 	$(INSTALL) -Dm0644 packaging/config/daemon.toml \
 		$(DESTDIR)$(SYSCONFDIR)/timebandits/daemon.toml
 
+KWIN_SCRIPT_ID  = org.timebandits.focus
+KWINSCRIPTDIR  ?= $(DATADIR)/kwin/scripts
+
 install-plasma: build-plugin
 	DESTDIR=$(DESTDIR) cmake --install plasmoid/plugin/build
 	$(INSTALL) -d $(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)
 	cp -r plasmoid/$(PLASMOID_ID)/metadata.json plasmoid/$(PLASMOID_ID)/contents \
 		$(DESTDIR)$(PLASMOIDDIR)/$(PLASMOID_ID)/
+	$(INSTALL) -d $(DESTDIR)$(KWINSCRIPTDIR)/$(KWIN_SCRIPT_ID)
+	cp -r kwin-script/$(KWIN_SCRIPT_ID)/metadata.json kwin-script/$(KWIN_SCRIPT_ID)/contents \
+		$(DESTDIR)$(KWINSCRIPTDIR)/$(KWIN_SCRIPT_ID)/
 
 install-docs:
 	$(INSTALL) -Dm0644 README.md $(DESTDIR)$(DATADIR)/doc/time-bandits/README.md

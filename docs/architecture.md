@@ -124,6 +124,24 @@ household. Both are excluded, and a `live_logind_reports_usable_sessions` test
 checks the mapping against the real bus — a mistyped D-Bus property name
 compiles perfectly and fails silently at runtime.
 
+### Turning the focus reporter on
+
+The script is a package like any other, and it does nothing until KWin is told
+to load it:
+
+```sh
+kwriteconfig6 --file kwinrc --group Plugins --key org.timebandits.focusEnabled true
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start
+```
+
+`start()` will not reload a script that is already running — during development
+`unloadScript org.timebandits.focus` has to come first, which is a good hour to
+lose to a stale copy.
+
+Its log line names the application and never the window title. The journal is
+not a private place, and a caption is exactly what the privacy screen promises
+is not collected unless a parent asks for it.
+
 ### A known weak point
 
 Whether the screen is locked comes from logind's `LockedHint`, which the desktop
