@@ -257,7 +257,7 @@ pub fn policy_day(now: &Zoned, day_start: civil::Time) -> PolicyDay {
 /// A `day_start` inside a daylight-saving gap moves forward rather than
 /// failing — `jiff`'s compatible disambiguation. That matters twice a year with
 /// the default 04:00 nowhere near the gap, and more often for anyone who sets
-/// day_start into the small hours.
+/// `day_start` into the small hours.
 #[must_use]
 pub fn policy_day_end(day: PolicyDay, day_start: civil::Time, tz: &TimeZone) -> Zoned {
     let next = day.date.tomorrow().unwrap_or(day.date);

@@ -516,6 +516,67 @@ mod tests {
     }
 
     #[test]
+    fn a_weekly_budget_can_replace_daily_limits_entirely() {
+        // Unlimited days plus a weekly ceiling means the child allocates the
+        // week themselves — three hours on Saturday and nothing on Sunday is
+        // their call. No new mechanism is needed for this; it falls out of the
+        // two quotas being independent.
+        let mut p = policy_2h();
+        p.daily_quota = WeekSchedule::uniform(Quota::Unlimited);
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(10));
+        assert!(p.validate().is_ok());
+
+        // Six hours in one sitting is allowed while the week has room.
+        let usage = UsageSnapshot {
+            used_today: DurationSpec::from_hours(6),
+            used_this_week: DurationSpec::from_hours(6),
+            ..UsageSnapshot::default()
+        };
+        let v = evaluate(&p, &usage, &at(2026, 8, 22, 16, 0));
+        assert_eq!(v.remaining(), Some(DurationSpec::from_hours(4)));
+        assert_eq!(
+            match &v {
+                Verdict::Allowed(a) => a.limited_by,
+                Verdict::Denied(_) => panic!("expected allowed"),
+            },
+            LimitedBy::WeeklyQuota
+        );
+
+        // And spending it all stops them for the rest of the week, not the day.
+        let spent = UsageSnapshot {
+            used_this_week: DurationSpec::from_hours(10),
+            ..UsageSnapshot::default()
+        };
+        let d = evaluate(&p, &spent, &at(2026, 8, 22, 16, 0));
+        assert_eq!(
+            d.denial().map(|d| d.reason),
+            Some(DenyReason::WeeklyQuotaExhausted)
+        );
+    }
+
+    #[test]
+    fn a_weekly_budget_can_still_carry_a_daily_ceiling() {
+        // The middle setting: spend the week freely, but not more than three
+        // hours in any one day.
+        let mut p = policy_2h();
+        p.daily_quota = WeekSchedule::uniform(Quota::Limited(DurationSpec::from_hours(3)));
+        p.weekly_quota = Quota::Limited(DurationSpec::from_hours(10));
+        assert!(p.validate().is_ok());
+
+        let usage = UsageSnapshot {
+            used_today: DurationSpec::from_hours(3),
+            used_this_week: DurationSpec::from_hours(4),
+            ..UsageSnapshot::default()
+        };
+        let d = evaluate(&p, &usage, &at(2026, 8, 22, 16, 0));
+        assert_eq!(
+            d.denial().map(|d| d.reason),
+            Some(DenyReason::DailyQuotaExhausted),
+            "the daily ceiling binds first, and says so"
+        );
+    }
+
+    #[test]
     fn a_day_with_zero_quota_blocks_all_day() {
         let mut p = policy_2h();
         p.daily_quota
